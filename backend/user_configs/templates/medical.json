@@ -1,0 +1,57 @@
+{
+  "industry": "medical",
+  "display_name": "Medical/Pharmacy Shop",
+  
+  "gemini": {
+    "system_instruction": "You are an expert at digitizing medical prescription bills. Extract data into JSON format.\n\n**STEP 1: Extract Header Information**\n* **Receipt Number:** Prescription/Receipt number. Ensure it is always 3 digits if applicable.\n* **Date:** Extract date in dd-MMM-yyyy format (e.g., 15-Jan-2025).\n* **Patient Name:** Name of the patient (English only, no salutations).\n* **Patient ID:** Patient identifier if present.\n* **Prescription Number:** Rx number.\n* **Doctor Name:** Prescribing doctor's name.\n\n**STEP 2: Extract Line Items (Medicines)**\n* Extract each medicine/item listed.\n* **Description:** Medicine name.\n* **Quantity:** Number of units/tablets.\n* **Rate:** Unit price.\n* **Amount:** Total (Quantity × Rate).\n* **Confidence:** Your confidence (0-100%).\n\n**OUTPUT FORMAT (JSON ONLY):**\n{\n    \"header\": {\n        \"receipt_number\": \"...\", \"date\": \"...\", \"patient_name\": \"...\", \n        \"patient_id\": \"...\", \"prescription_number\": \"...\", \"doctor_name\": \"...\"\n    },\n    \"items\": [\n        { \"description\": \"...\", \"quantity\": 1, \"rate\": 100, \"amount\": 100, \"confidence\": 95 }\n    ]\n}"
+  },
+  
+  "columns": {
+    "invoice_all": [
+      {"db_column": "receipt_number", "label": "Rx #", "type": "string", "visible": true, "editable": false},
+      {"db_column": "date", "label": "Date", "type": "date", "visible": true, "editable": true},
+      {"db_column": "patient_name", "label": "Patient", "type": "string", "visible": true, "editable": true},
+      {"db_column": "patient_id", "label": "Patient ID", "type": "string", "visible": true, "editable": true},
+      {"db_column": "prescription_number", "label": "Prescription", "type": "string", "visible": true, "editable": true},
+      {"db_column": "doctor_name", "label": "Doctor", "type": "string", "visible": true, "editable": true},
+      {"db_column": "description", "label": "Medicine", "type": "string", "visible": true, "editable": true},
+      {"db_column": "quantity", "label": "Qty", "type": "number", "visible": true, "editable": true},
+      {"db_column": "rate", "label": "Price", "type": "number", "visible": true, "editable": true},
+      {"db_column": "amount", "label": "Total", "type": "number", "visible": true, "editable": true},
+      {"db_column": "receipt_link", "label": "Link", "type": "link", "visible": true, "editable": false}
+    ]
+    
+    ,
+    
+    "verify_dates": [
+      {"db_column": "verification_status", "label": "Status", "type": "select", "options": ["Pending", "Done"], "editable": true},
+      {"db_column": "receipt_number", "label": "Receipt #", "type": "string", "editable": false},
+      {"db_column": "date", "label": "Date", "type": "date", "editable": true},
+      {"db_column": "audit_findings", "label": "Issues", "type": "string", "editable": false},
+      {"db_column": "receipt_link", "label": "View", "type": "link", "editable": false}
+    ],
+    
+    "verify_amounts": [
+      {"db_column": "verification_status", "label": "Status", "type": "select", "options": ["Pending", "Done"], "editable": true},
+      {"db_column": "receipt_number", "label": "Receipt #", "type": "string", "editable": false},
+      {"db_column": "description", "label": "Description", "type": "string", "editable": true},
+      {"db_column": "quantity", "label": "Qty", "type": "number", "editable": true},
+      {"db_column": "rate", "label": "Rate", "type": "number", "editable": true},
+      {"db_column": "amount", "label": "Amount", "type": "number", "editable": true},
+      {"db_column": "amount_mismatch", "label": "Mismatch", "type": "number", "editable": false},
+      {"db_column": "receipt_link", "label": "Receipt", "type": "link", "editable": false}
+    ],
+    
+    "verified": [
+      {"db_column": "receipt_number", "label": "Receipt #", "type": "string", "editable": false},
+      {"db_column": "date", "label": "Date", "type": "date", "editable": true},
+      {"db_column": "customer_name", "label": "Customer", "type": "string", "editable": true},
+      {"db_column": "car_number", "label": "Vehicle #", "type": "string", "editable": true},
+      {"db_column": "description", "label": "Item", "type": "string", "editable": true},
+      {"db_column": "quantity", "label": "Qty", "type": "number", "editable": true},
+      {"db_column": "rate", "label": "Rate", "type": "number", "editable": true},
+      {"db_column": "amount", "label": "Amount", "type": "number", "editable": true},
+      {"db_column": "receipt_link", "label": "Link", "type": "link", "editable": false}
+    ]
+    }
+}

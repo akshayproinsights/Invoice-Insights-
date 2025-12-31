@@ -1,0 +1,861 @@
+"""
+Verification workflow service.
+Contains build_verified() and run_sync_verified_logic() ported from old processor.
+"""
+import pandas as pd
+import logging
+from typing import Dict, Any, Optional
+from datetime import datetime
+
+from utils.date_helpers import normalize_date, format_to_mmm, safe_format_date_series
+# Note: sheets imports removed - now using Supabase via run_sync_verified_logic_supabase()
+# Old run_sync_verified_logic() kept for reference but not actively used
+
+logger = logging.getLogger(__name__)
+
+
+def _find_col(df: pd.DataFrame, candidates: list) -> Optional[str]:
+    """Find a column in the dataframe using case-insensitive matching"""
+    for c in candidates:
+        if c in df.columns:
+            return c
+    for c in df.columns:
+        if c.lower().replace(" ", "").replace("-", "_") in [x.lower().replace(" ", "").replace("-", "_") for x in candidates]:
+            return c
+    return None
+
+
+def build_verified(df_raw: pd.DataFrame, df_date: pd.DataFrame, df_amount: pd.DataFrame) -> pd.DataFrame:
+    """
+    Build the Invoice Verified sheet from Invoice All and verification sheets.
+    This is the core verification logic that:
+    1. Excludes pending records
+    2. Includes verified records
+    3. Applies corrections from verification sheets
+    """
+    raw = df_raw.copy()
+    date = df_date.copy()
+    amount = df_amount.copy()
+
+    rowid_col_raw = _find_col(raw, ["row_id", "Row_Id", "Row ID", "rowid"])
+    rowid_col_date = _find_col(date, ["row_id", "Row_Id", "Row ID", "rowid"])
+    rowid_col_amount = _find_col(amount, ["row_id", "Row_Id", "Row ID", "rowid"])
+
+    def clean_link(x):
+        if pd.isna(x):
+            return pd.NA
+        s = str(x).strip()
+        return s if s else pd.NA
+
+    def as_str_trim(x):
+        if pd.isna(x):
+            return ""
+        s = str(x).strip()
+        if s.endswith('.0'):
+            s = s[:-2]
+        return s
+
+    def fix_date(series):
+        """Parse dates using explicit dd-mm-yyyy or dd-MMM-yyyy format"""
+        def parse_single_date(val):
+            if pd.isna(val) or not val:
+                return pd.NaT
+            
+            s = str(val).strip()
+            if not s:
+                return pd.NaT
+            
+            for fmt in ["%d-%b-%Y", "%d-%m-%Y", "%d/%m/%Y"]:
+                try:
+                    return datetime.strptime(s, fmt)
+                except:
+                    continue
+            
+            normalized = normalize_date(s)
+            if normalized:
+                try:
+                    return datetime.strptime(normalized, "%d-%m-%Y")
+                except:
+                    pass
+            
+            return pd.NaT
+        
+        dt = series.apply(parse_single_date)
+        result = dt.apply(lambda x: x.strftime("%d-%b-%Y") if pd.notna(x) else "")
+        return result
+
+    # Clean and prepare data
+    raw["Receipt Link_clean"] = raw.get("Receipt Link", pd.Series([pd.NA]*len(raw))).apply(clean_link)
+    raw["Receipt Number_str"] = raw.get("Receipt Number", pd.Series([""]*len(raw))).astype(str).fillna("").apply(as_str_trim)
+    raw["Date"] = fix_date(raw.get("Date", pd.Series([pd.NA]*len(raw))))
+
+    date["Receipt Link_clean"] = date.get("Receipt Link", pd.Series([pd.NA]*len(date))).apply(clean_link)
+    date["Receipt Number_str"] = date.get("Receipt Number", pd.Series([""]*len(date))).astype(str).fillna("").apply(as_str_trim)
+    date["Verification Status_clean"] = date.get("Verification Status", pd.Series([""]*len(date))).astype(str).str.strip().str.lower()
+    date["Date"] = fix_date(date.get("Date", pd.Series([pd.NA]*len(date))))
+    
+    if "Upload Date" in date.columns:
+        date["Upload Date_dt"] = pd.to_datetime(date["Upload Date"], errors="coerce")
+        date = date.sort_values("Upload Date_dt").drop_duplicates(subset=["Receipt Link_clean", "Receipt Number_str"], keep="last")
+    else:
+        date = date.drop_duplicates(subset=["Receipt Link_clean", "Receipt Number_str"], keep="last")
+
+    amount["Receipt Link_clean"] = amount.get("Receipt Link", pd.Series([pd.NA]*len(amount))).apply(clean_link)
+    amount["Receipt Number_str"] = amount.get("Receipt Number", pd.Series([""]*len(amount))).astype(str).fillna("").apply(as_str_trim)
+    amount["Verification Status_clean"] = amount.get("Verification Status", pd.Series([""]*len(amount))).astype(str).str.strip().str.lower()
+    
+    if "Upload Date" in amount.columns:
+        amount["Upload Date_dt"] = pd.to_datetime(amount["Upload Date"], errors="coerce")
+        amount = amount.sort_values("Upload Date_dt").drop_duplicates(
+            subset=["Receipt Number_str", "Description", rowid_col_amount] if rowid_col_amount else ["Receipt Number_str", "Description"], 
+            keep="last"
+        )
+    else:
+        amount = amount.drop_duplicates(
+            subset=["Receipt Number_str", "Description", rowid_col_amount] if rowid_col_amount else ["Receipt Number_str", "Description"], 
+            keep="last"
+        )
+
+    # Identify pending records to exclude
+    date_pending_row_ids = set()
+    date_pending_receipts = set()  # NEW: Track Receipt Numbers that are Pending in Dates
+    if rowid_col_date and rowid_col_date in date.columns:
+        date_pending_row_ids = set(date.loc[date["Verification Status_clean"] != "done", rowid_col_date].dropna().astype(str))
+        # Get Receipt Numbers that are Pending/Duplicate in Dates
+        date_pending_receipts = set(date.loc[date["Verification Status_clean"].isin(["pending", "duplicate receipt number"]), "Receipt Number_str"].dropna())
+    
+    amount_pending_row_ids = set()
+    amount_pending_receipts = set()  # NEW: Track Receipt Numbers that are Pending in Amount
+    if rowid_col_amount and rowid_col_amount in amount.columns:
+        amount_pending_row_ids = set(amount.loc[amount["Verification Status_clean"] != "done", rowid_col_amount].dropna().astype(str))
+        # Get Receipt Numbers that are Pending/Duplicate in Amount
+        amount_pending_receipts = set(amount.loc[amount["Verification Status_clean"].isin(["pending", "duplicate receipt number"]), "Receipt Number_str"].dropna())
+
+    # Identify done records
+    date_done_links = set(date.loc[date["Verification Status_clean"] == "done", "Receipt Link_clean"].dropna())
+    date_done_numbers = set(date.loc[date["Verification Status_clean"] == "done", "Receipt Number_str"].dropna())
+    amount_done_numbers = set(amount.loc[amount["Verification Status_clean"] == "done", "Receipt Number_str"].dropna())
+    amount_done_rowids = set()
+    if rowid_col_amount and rowid_col_amount in amount.columns:
+        amount_done_rowids = set(amount.loc[amount["Verification Status_clean"] == "done", rowid_col_amount].dropna().astype(str))
+
+    # All verification sheet records
+    date_links_all = set(date["Receipt Link_clean"].dropna())
+    date_numbers_all = set(date["Receipt Number_str"].dropna())
+    amount_numbers_all = set(amount["Receipt Number_str"].dropna())
+    amount_links_all = set(amount["Receipt Link_clean"].dropna())
+    amount_rowids_all = set()
+    if rowid_col_amount and rowid_col_amount in amount.columns:
+        amount_rowids_all = set(amount[rowid_col_amount].dropna().astype(str))
+
+    # Combine pending Row_Ids for exclusion
+    excluded_row_ids = date_pending_row_ids | amount_pending_row_ids
+    
+    # NEW: Combine pending Receipt Numbers - these should NEVER go to Verified
+    # If a Receipt Number is Pending in either Dates or Amount, exclude it entirely
+    pending_receipts_all = date_pending_receipts | amount_pending_receipts
+    
+    # Also exclude rejected records
+    if 'Review Status' in raw.columns and rowid_col_raw:
+        rejected_mask = raw['Review Status'].astype(str).str.lower() == 'rejected'
+        rejected_row_ids = set(raw.loc[rejected_mask, rowid_col_raw].dropna().astype(str))
+        excluded_row_ids = excluded_row_ids | rejected_row_ids
+
+    # Distinguish "Verified" from "Already Verified"
+    already_verified_mask = pd.Series([False] * len(raw), index=raw.index)
+    if 'Review Status' in raw.columns:
+        status_lower = raw['Review Status'].astype(str).str.lower()
+        already_verified_mask = status_lower == 'verified'
+
+    presence_mask_any_verify = (
+        raw["Receipt Link_clean"].isin(date_links_all) |
+        raw["Receipt Link_clean"].isin(amount_links_all) |
+        raw["Receipt Number_str"].isin(date_numbers_all) |
+        raw["Receipt Number_str"].isin(amount_numbers_all) |
+        raw.get(rowid_col_raw, pd.Series([pd.NA]*len(raw))).astype(str).isin(amount_rowids_all)
+    )
+
+    # Base dataframe: records NOT in verification or already verified
+    base_df = raw[(~presence_mask_any_verify) | already_verified_mask].copy()
+    if excluded_row_ids and rowid_col_raw:
+        base_df = base_df[~base_df.get(rowid_col_raw, pd.Series([""] * len(base_df))).astype(str).isin(excluded_row_ids)].copy()
+    
+    # NEW: Exclude any records with Receipt Numbers that are Pending in ANY sheet
+    if pending_receipts_all:
+        base_df = base_df[~base_df["Receipt Number_str"].isin(pending_receipts_all)].copy()
+    
+    # Exclude rejected and already verified
+    if 'Review Status' in base_df.columns:
+        status_lower = base_df['Review Status'].astype(str).str.lower()
+        base_df = base_df[~status_lower.isin(['rejected', 'already verified'])].copy()
+    
+    base_df["Review Status"] = "Verified"
+
+    # Process done records
+    mask_candidate_date_done = raw["Receipt Link_clean"].isin(date_done_links)
+    mask_candidate_amount_done_rowid = False
+    if rowid_col_raw:
+        mask_candidate_amount_done_rowid = raw.get(rowid_col_raw, pd.Series([""]*len(raw))).astype(str).isin(amount_done_rowids)
+    mask_candidate_amount_done_number = raw["Receipt Number_str"].isin(amount_done_numbers)
+
+    mask_blocked_by_pending_rowid = False
+    if rowid_col_raw and excluded_row_ids:
+        mask_blocked_by_pending_rowid = raw.get(rowid_col_raw, pd.Series([""] * len(raw))).astype(str).isin(excluded_row_ids)
+    
+    # NEW: Also block if Receipt Number is Pending in ANY sheet
+    mask_blocked_by_pending_receipt = False
+    if pending_receipts_all:
+        mask_blocked_by_pending_receipt = raw["Receipt Number_str"].isin(pending_receipts_all)
+
+    inclusion_mask = (
+        (mask_candidate_date_done | mask_candidate_amount_done_rowid | mask_candidate_amount_done_number)
+        & (~mask_blocked_by_pending_rowid if isinstance(mask_blocked_by_pending_rowid, pd.Series) else pd.Series([True] * len(raw), index=raw.index))
+        & (~mask_blocked_by_pending_receipt if isinstance(mask_blocked_by_pending_receipt, pd.Series) else pd.Series([True] * len(raw), index=raw.index))
+    )
+
+    included_rows = raw[inclusion_mask].copy()
+    
+    if 'Review Status' in included_rows.columns and not included_rows.empty:
+        included_rows = included_rows[included_rows['Review Status'].astype(str).str.lower() != 'rejected'].copy()
+
+    if included_rows.empty:
+        final_df = base_df.reindex(columns=df_raw.columns)
+        return final_df
+
+    # Apply date corrections
+    date_done_df = date[date["Verification Status_clean"] == "done"].copy()
+    date_apply_cols = []
+    if "Receipt Number" in date_done_df.columns:
+        date_apply_cols.append("Receipt Number")
+    if "Receipt Link" in date_done_df.columns:
+        date_apply_cols.append("Receipt Link")
+    if "Date" in date_done_df.columns:
+        date_apply_cols.append("Date")
+    date_apply_cols = ["Receipt Link_clean"] + date_apply_cols
+    date_done_sel = date_done_df[date_apply_cols].drop_duplicates(subset=["Receipt Link_clean"], keep="last").copy()
+    
+    rename_map = {}
+    if "Receipt Number" in date_done_sel.columns:
+        rename_map["Receipt Number"] = "ReceiptNumber_date_verified"
+    if "Receipt Link" in date_done_sel.columns:
+        rename_map["Receipt Link"] = "ReceiptLink_date_verified"
+    if "Date" in date_done_sel.columns:
+        rename_map["Date"] = "Date_date_verified"
+    date_done_sel = date_done_sel.rename(columns=rename_map)
+
+    included_rows = included_rows.merge(date_done_sel, on="Receipt Link_clean", how="left", validate="m:1")
+    if "ReceiptNumber_date_verified" in included_rows.columns:
+        included_rows["Receipt Number"] = included_rows["ReceiptNumber_date_verified"].combine_first(included_rows["Receipt Number"])
+    if "ReceiptLink_date_verified" in included_rows.columns:
+        included_rows["Receipt Link"] = included_rows["ReceiptLink_date_verified"].combine_first(included_rows["Receipt Link"])
+    if "Date_date_verified" in included_rows.columns:
+        included_rows["Date"] = included_rows["Date_date_verified"].combine_first(included_rows["Date"])
+    for c in ["ReceiptNumber_date_verified", "ReceiptLink_date_verified", "Date_date_verified"]:
+        if c in included_rows.columns:
+            included_rows.drop(columns=[c], inplace=True)
+
+    # Apply amount corrections
+    amount_done_df = amount[amount["Verification Status_clean"] == "done"].copy()
+    amt_cols = [c for c in ["Quantity", "Rate", "Amount", "Amount Mismatch"] if c in amount_done_df.columns]
+    
+    if not amount_done_df.empty and amt_cols:
+        amt_merge = pd.DataFrame()
+        if rowid_col_amount and rowid_col_amount in amount_done_df.columns:
+            amt_merge = amount_done_df[[rowid_col_amount] + amt_cols].copy()
+            amt_merge[rowid_col_amount] = amt_merge[rowid_col_amount].astype(str)
+            amt_merge = amt_merge.drop_duplicates(subset=[rowid_col_amount], keep="last")
+            included_rows[rowid_col_raw] = included_rows.get(rowid_col_raw, pd.Series([""]*len(included_rows))).astype(str)
+            
+            included_rows = included_rows.merge(
+                amt_merge.rename(columns={rowid_col_amount: rowid_col_raw}), 
+                on=rowid_col_raw, 
+                how="left", 
+                suffixes=(None, '_verified'),
+                validate="m:1"
+            )
+            
+            for col in amt_cols:
+                verified_col = f"{col}_verified"
+                if verified_col in included_rows.columns:
+                    included_rows[col] = included_rows[verified_col].combine_first(included_rows[col])
+                    included_rows.drop(columns=[verified_col], inplace=True)
+
+    included_rows["Review Status"] = "Verified"
+
+    # Combine base and included
+    final_df = pd.concat([base_df, included_rows], ignore_index=True, sort=False)
+    for c in ["Receipt Link_clean", "Receipt Number_str", "Upload Date_dt"]:
+        if c in final_df.columns:
+            final_df.drop(columns=[c], inplace=True, errors="ignore")
+
+    final_cols = [c for c in df_raw.columns if c in final_df.columns]
+    other_cols = [c for c in final_df.columns if c not in final_cols]
+    final_df = final_df[final_cols + other_cols]
+    
+    # Deduplicate
+    dedup_cols = []
+    if "Receipt Number" in final_df.columns:
+        dedup_cols.append("Receipt Number")
+    if "Date" in final_df.columns:
+        dedup_cols.append("Date")
+    if "Description" in final_df.columns:
+        dedup_cols.append("Description")
+    
+    if dedup_cols:
+        if "Upload Date" in final_df.columns:
+            final_df = final_df.sort_values("Upload Date", na_position='first')
+        final_df = final_df.drop_duplicates(subset=dedup_cols, keep='last').reset_index(drop=True)
+        logger.info(f"Deduplicated Invoice Verified: {len(final_df)} unique records")
+
+    return final_df
+
+
+async def run_sync_verified_logic(sheet_id: str) -> Dict[str, Any]:
+    """
+    Execute the Sync & Finish workflow:
+    1. Read All, Verify Dates, Verify Amount
+    2. Apply corrections to Invoice All
+    3. Rebuild Invoice Verified
+    4. Clean up verification sheets (remove Done/Rejected)
+    
+    Returns:
+        Dictionary with sync results
+    """
+    sheets_client = get_sheets_client()
+    results = {
+        "success": False,
+        "message": "",
+        "records_synced": 0
+    }
+    
+    try:
+        logger.info("Starting Sync & Finish workflow")
+        
+        # 1. Read dataframes
+        df_raw = sheets_client.read_sheet_to_df(sheet_id, SHEET_INVOICE_ALL)
+        if "Receipt Number" in df_raw.columns:
+            df_raw["Receipt Number"] = df_raw["Receipt Number"].astype(str).str.replace(r'\.0$', '', regex=True)
+        
+        df_date = sheets_client.read_sheet_to_df(sheet_id, SHEET_VERIFY_DATES)
+        if "Receipt Number" in df_date.columns:
+            df_date["Receipt Number"] = df_date["Receipt Number"].astype(str).str.replace(r'\.0$', '', regex=True)
+        
+        df_amount = sheets_client.read_sheet_to_df(sheet_id, SHEET_VERIFY_AMOUNT)
+        if "Receipt Number" in df_amount.columns:
+            df_amount["Receipt Number"] = df_amount["Receipt Number"].astype(str).str.replace(r'\.0$', '', regex=True)
+
+        corrections_made = False
+        
+        # 2. Apply date/receipt corrections
+        if 'Verification Status' in df_date.columns:
+            date_done = df_date[df_date['Verification Status'].astype(str).str.lower() == 'done'].copy()
+            
+            if not date_done.empty:
+                logger.info(f"Applying {len(date_done)} date/receipt corrections")
+                date_done['Receipt Link_clean'] = date_done['Receipt Link'].astype(str).str.strip()
+                date_done['Receipt Number'] = date_done['Receipt Number'].astype(str).str.replace(r'\.0$', '', regex=True)
+                date_done['Date'] = date_done['Date'].apply(normalize_date)
+                
+                for _, row in date_done.iterrows():
+                    link = row.get('Receipt Link_clean')
+                    new_rec_num = row.get('Receipt Number')
+                    new_date = row.get('Date')
+                    
+                    if not link:
+                        continue
+                    
+                    mask = df_raw['Receipt Link'].astype(str).str.strip() == link
+                    if mask.any():
+                        if new_rec_num:
+                            df_raw.loc[mask, 'Receipt Number'] = new_rec_num
+                        if new_date:
+                            df_raw.loc[mask, 'Date'] = new_date  # Already normalized to DD-MM-YYYY
+                        df_raw.loc[mask, 'Review Status'] = 'Verified'
+                        corrections_made = True
+
+        # 3. Apply amount corrections
+        if 'Verification Status' in df_amount.columns:
+            amt_done = df_amount[df_amount['Verification Status'].astype(str).str.lower() == 'done'].copy()
+            
+            if not amt_done.empty:
+                logger.info(f"Applying {len(amt_done)} amount corrections")
+                
+                for _, row in amt_done.iterrows():
+                    link = str(row.get('Receipt Link', '')).strip()
+                    desc = str(row.get('Description', '')).strip()
+                    new_qty = row.get('Quantity')
+                    new_rate = row.get('Rate')
+                    new_amt = row.get('Amount')
+                    new_desc = row.get('Description')  # Get corrected description
+                    
+                    if not link:
+                        continue
+
+                    mask = (
+                        (df_raw['Receipt Link'].astype(str).str.strip() == link) & 
+                        (df_raw['Description'].astype(str).str.strip() == desc)
+                    )
+                    
+                    if mask.any():
+                        # Apply description correction first (if changed)
+                        if pd.notna(new_desc) and str(new_desc).strip() != '' and str(new_desc).strip() != desc:
+                            df_raw.loc[mask, 'Description'] = new_desc
+                        
+                        # Apply numeric corrections
+                        if pd.notna(new_qty) and str(new_qty) != '':
+                            df_raw.loc[mask, 'Quantity'] = new_qty
+                        if pd.notna(new_rate) and str(new_rate) != '':
+                            df_raw.loc[mask, 'Rate'] = new_rate
+                        if pd.notna(new_amt) and str(new_amt) != '':
+                            df_raw.loc[mask, 'Amount'] = new_amt
+                        
+                        df_raw.loc[mask, 'Review Status'] = 'Verified'
+                        corrections_made = True
+
+        # 4. Save updated Invoice All
+        if corrections_made:
+            logger.info("Updating Invoice All sheet")
+            if 'Date' in df_raw.columns:
+                df_raw['Date'] = safe_format_date_series(df_raw['Date'], output_format='%Y-%m-%d')
+            sheets_client.write_df_to_sheet(df_raw, sheet_id, SHEET_INVOICE_ALL)
+
+        # 5. Build and save Invoice Verified
+        final_df = build_verified(df_raw, df_date, df_amount)
+        sheets_client.write_df_to_sheet(final_df, sheet_id, SHEET_INVOICE_VERIFIED)
+        logger.info(f"Invoice Verified updated with {len(final_df)} rows")
+
+        # 6. Clean up verification sheets - CROSS-SHEET DEPENDENCY
+        # A record should only be removed from Verify Dates if:
+        #   - It's Done AND the same Receipt Number is Done in Verify Amount (or not in Verify Amount)
+        # Same for Verify Amount - check if Done in Verify Dates
+        
+        # Get Receipt Numbers that are Done in each sheet
+        date_done_receipts = set()
+        date_pending_receipts = set()
+        if 'Verification Status' in df_date.columns and 'Receipt Number' in df_date.columns:
+            date_status_lower = df_date['Verification Status'].astype(str).str.lower().str.strip()
+            date_done_receipts = set(df_date.loc[date_status_lower == 'done', 'Receipt Number'].astype(str).str.strip())
+            date_pending_receipts = set(df_date.loc[date_status_lower.isin(['pending', 'duplicate receipt number']), 'Receipt Number'].astype(str).str.strip())
+        
+        amount_done_receipts = set()
+        amount_pending_receipts = set()
+        amount_all_receipts = set()
+        if 'Verification Status' in df_amount.columns and 'Receipt Number' in df_amount.columns:
+            amount_status_lower = df_amount['Verification Status'].astype(str).str.lower().str.strip()
+            amount_done_receipts = set(df_amount.loc[amount_status_lower == 'done', 'Receipt Number'].astype(str).str.strip())
+            amount_pending_receipts = set(df_amount.loc[amount_status_lower.isin(['pending', 'duplicate receipt number']), 'Receipt Number'].astype(str).str.strip())
+            amount_all_receipts = set(df_amount['Receipt Number'].astype(str).str.strip())
+        
+        # For Verify Dates: keep if Pending, OR if Done but same Receipt is still Pending in Verify Amount
+        if 'Verification Status' in df_date.columns:
+            def should_keep_date_record(row):
+                status = str(row.get('Verification Status', '')).lower().strip()
+                receipt_num = str(row.get('Receipt Number', '')).strip()
+                
+                # Keep if Pending or Duplicate
+                if status in ['pending', 'duplicate receipt number']:
+                    return True
+                
+                # If Done, check if same Receipt is still Pending in Verify Amount
+                if status == 'done':
+                    # If receipt exists in Verify Amount and is Pending there, keep in Dates
+                    if receipt_num in amount_pending_receipts:
+                        return True
+                    # If receipt exists in Verify Amount but is Done, can delete
+                    # If receipt doesn't exist in Verify Amount, can delete
+                    return False
+                
+                # Already Verified, Rejected - can delete
+                return False
+            
+            df_date_clean = df_date[df_date.apply(should_keep_date_record, axis=1)].copy()
+            sheets_client.write_df_to_sheet(df_date_clean, sheet_id, SHEET_VERIFY_DATES)
+            logger.info(f"Verify Dates cleaned: {len(df_date_clean)} records remain")
+
+        # For Verify Amount: keep if Pending, OR if Done but same Receipt is still Pending in Verify Dates
+        if 'Verification Status' in df_amount.columns:
+            def should_keep_amount_record(row):
+                status = str(row.get('Verification Status', '')).lower().strip()
+                receipt_num = str(row.get('Receipt Number', '')).strip()
+                
+                # Keep if Pending or Duplicate
+                if status in ['pending', 'duplicate receipt number']:
+                    return True
+                
+                # If Done, check if same Receipt is still Pending in Verify Dates
+                if status == 'done':
+                    # If receipt exists in Verify Dates and is Pending there, keep in Amount
+                    if receipt_num in date_pending_receipts:
+                        return True
+                    # If receipt exists in Verify Dates but is Done, can delete
+                    # If receipt doesn't exist in Verify Dates, can delete
+                    return False
+                
+                # Already Verified, Rejected - can delete
+                return False
+            
+            df_amount_clean = df_amount[df_amount.apply(should_keep_amount_record, axis=1)].copy()
+            sheets_client.write_df_to_sheet(df_amount_clean, sheet_id, SHEET_VERIFY_AMOUNT)
+            logger.info(f"Verify Amount cleaned: {len(df_amount_clean)} records remain")
+
+        results["success"] = True
+        results["message"] = "Sync & Finish completed successfully"
+        results["records_synced"] = len(final_df)
+        
+    except Exception as e:
+        logger.error(f"Error in sync workflow: {e}")
+        results["message"] = f"Sync failed: {str(e)}"
+        raise
+    
+    return results
+"""
+Supabase version of sync-finish logic.
+Added to existing verification.py
+"""
+
+
+async def run_sync_verified_logic_supabase(username: str) -> Dict[str, Any]:
+    """
+    Execute the Sync & Finish workflow using Supabase:
+    1. Read invoices, verification_dates, verification_amounts from Supabase
+    2. Apply corrections to invoices table
+    3. Rebuild verified_invoices table
+    4. Clean up verification tables (remove Done/Rejected)
+    
+    Args:
+        username: Username for RLS filtering
+    
+    Returns:
+        Dictionary with sync results
+    """
+    from database_helpers import (
+        get_all_invoices,
+        get_verification_dates,
+        get_verification_amounts,
+        update_verified_invoices,
+        convert_numeric_types
+    )
+    from database import get_database_client
+    
+    results = {
+        "success": False,
+        "message": "",
+        "records_synced": 0
+    }
+    
+    try:
+        logger.info(f"Starting Sync & Finish workflow for user: {username}")
+        
+        # 1. Read data from Supabase (returns list of dicts)
+        invoices_data = get_all_invoices(username)
+        dates_data = get_verification_dates(username)
+        amounts_data = get_verification_amounts(username)
+        
+        if not invoices_data:
+            logger.warning(f"No invoices found for user: {username}")
+            results["message"] = "No invoices found"
+            return results
+        
+        # Convert to DataFrames (need to handle snake_case column names)
+        df_raw = pd.DataFrame(invoices_data)
+        df_date = pd.DataFrame(dates_data) if dates_data else pd.DataFrame()
+        df_amount = pd.DataFrame(amounts_data) if amounts_data else pd.DataFrame()
+        
+        # Map snake_case columns to Title Case for compatibility with build_verified()
+        # build_verified() expects Title Case columns from Google Sheets
+        column_map = {
+            'receipt_number': 'Receipt Number',
+            'receipt_link': 'Receipt Link',
+            'date': 'Date',
+            'customer_name': 'Customer Name',
+            'mobile_number': 'Mobile Number',
+            'car_number': 'Car Number',
+            'odometer': 'Odometer',
+            'description': 'Description',
+            'type': 'Type',
+            'quantity': 'Quantity',
+            'rate': 'Rate',
+            'amount': 'Amount',
+            'total_bill_amount': 'Total Bill Amount',
+            'upload_date': 'Upload Date',
+            'review_status': 'Review Status',
+            'calculated_amount': 'Calculated Amount',
+            'amount_mismatch': 'Amount Mismatch',
+            'confidence': 'Confidence',
+            'image_hash': 'Image Hash',
+            'row_id': 'Row_Id',
+            'verification_status': 'Verification Status',
+            'audit_findings': 'Audit Findings'
+        }
+        
+        # Rename columns
+        df_raw = df_raw.rename(columns=column_map)
+        df_date = df_date.rename(columns=column_map)
+        df_amount = df_amount.rename(columns=column_map)
+        
+        # Clean Receipt Number (.0 suffix)
+        if "Receipt Number" in df_raw.columns:
+            df_raw["Receipt Number"] = df_raw["Receipt Number"].astype(str).str.replace(r'\.0$', '', regex=True)
+        if "Receipt Number" in df_date.columns:
+            df_date["Receipt Number"] = df_date["Receipt Number"].astype(str).str.replace(r'\.0$', '', regex=True)
+        if "Receipt Number" in df_amount.columns:
+            df_amount["Receipt Number"] = df_amount["Receipt Number"].astype(str).str.replace(r'\.0$', '', regex=True)
+
+        corrections_made = False
+        db = get_database_client()
+        
+        # 2. Apply date/receipt corrections
+        if 'Verification Status' in df_date.columns:
+            date_done = df_date[df_date['Verification Status'].astype(str).str.lower() == 'done'].copy()
+            
+            if not date_done.empty:
+                logger.info(f"Applying {len(date_done)} date/receipt corrections")
+                date_done['Receipt Link_clean'] = date_done['Receipt Link'].astype(str).str.strip()
+                date_done['Receipt Number'] = date_done['Receipt Number'].astype(str).str.replace(r'\.0$', '', regex=True)
+                date_done['Date'] = date_done['Date'].apply(normalize_date)
+                
+                for _, row in date_done.iterrows():
+                    link = row.get('Receipt Link_clean')
+                    new_rec_num = row.get('Receipt Number')
+                    new_date = row.get('Date')
+                    
+                    if not link:
+                        continue
+                    
+                    mask = df_raw['Receipt Link'].astype(str).str.strip() == link
+                    if mask.any():
+                        if new_rec_num:
+                            df_raw.loc[mask, 'Receipt Number'] = new_rec_num
+                        if new_date:
+                            df_raw.loc[mask, 'Date'] = new_date  # Already normalized to DD-MM-YYYY
+                        df_raw.loc[mask, 'Review Status'] = 'Verified'
+                        corrections_made = True
+
+        # 3. Apply amount corrections
+        if 'Verification Status' in df_amount.columns:
+            amt_done = df_amount[df_amount['Verification Status'].astype(str).str.lower() == 'done'].copy()
+            
+            if not amt_done.empty:
+                logger.info(f"Applying {len(amt_done)} amount corrections")
+                
+                for _, row in amt_done.iterrows():
+                    link = str(row.get('Receipt Link', '')).strip()
+                    desc = str(row.get('Description', '')).strip()
+                    new_qty = row.get('Quantity')
+                    new_rate = row.get('Rate')
+                    new_amt = row.get('Amount')
+                    new_desc = row.get('Description')
+                    
+                    if not link:
+                        continue
+
+                    mask = (
+                        (df_raw['Receipt Link'].astype(str).str.strip() == link) & 
+                        (df_raw['Description'].astype(str).str.strip() == desc)
+                    )
+                    
+                    if mask.any():
+                        if pd.notna(new_desc) and str(new_desc).strip() != '' and str(new_desc).strip() != desc:
+                            df_raw.loc[mask, 'Description'] = new_desc
+                        
+                        if pd.notna(new_qty) and str(new_qty) != '':
+                            df_raw.loc[mask, 'Quantity'] = new_qty
+                        if pd.notna(new_rate) and str(new_rate) != '':
+                            df_raw.loc[mask, 'Rate'] = new_rate
+                        if pd.notna(new_amt) and str(new_amt) != '':
+                            df_raw.loc[mask, 'Amount'] = new_amt
+                        
+                        df_raw.loc[mask, 'Review Status'] = 'Verified'
+                        corrections_made = True
+
+        # 3B. Mark ALL receipts as "Verified" if they are fully Done
+        # Collect Done and Pending receipt numbers from both sheets
+        date_done_receipts = set()
+        date_pending_receipts = set()
+        amount_done_receipts = set()
+        amount_pending_receipts = set()
+        
+        if 'Verification Status' in df_date.columns and 'Receipt Number' in df_date.columns:
+            date_status_lower = df_date['Verification Status'].astype(str).str.lower().str.strip()
+            date_done_receipts = set(df_date.loc[date_status_lower == 'done', 'Receipt Number'].astype(str).str.strip())
+            date_pending_receipts = set(df_date.loc[date_status_lower.isin(['pending', 'duplicate receipt number']), 'Receipt Number'].astype(str).str.strip())
+        
+        if 'Verification Status' in df_amount.columns and 'Receipt Number' in df_amount.columns:
+            amount_status_lower = df_amount['Verification Status'].astype(str).str.lower().str.strip()
+            amount_done_receipts = set(df_amount.loc[amount_status_lower == 'done', 'Receipt Number'].astype(str).str.strip())
+            amount_pending_receipts = set(df_amount.loc[amount_status_lower.isin(['pending', 'duplicate receipt number']), 'Receipt Number'].astype(str).str.strip())
+        
+        # A receipt is fully verified if:
+        # - If it appears in Dates sheet: must be Done (not Pending)
+        # - If it appears in Amounts sheet: must be Done (not Pending)
+        # - If it doesn't appear in either sheet: it's auto-verified
+        all_receipts_in_raw = set(df_raw['Receipt Number'].astype(str).str.strip())
+        
+        for receipt_num in all_receipts_in_raw:
+            appears_in_dates = receipt_num in date_done_receipts or receipt_num in date_pending_receipts
+            appears_in_amounts = receipt_num in amount_done_receipts or receipt_num in amount_pending_receipts
+            
+            is_done_in_dates = receipt_num in date_done_receipts
+            is_done_in_amounts = receipt_num in amount_done_receipts
+            is_pending_in_dates = receipt_num in date_pending_receipts
+            is_pending_in_amounts = receipt_num in amount_pending_receipts
+            
+            # Mark as Verified if:
+            # - Not pending in either sheet
+            # - Done in all sheets where it appears
+            should_verify = True
+            if is_pending_in_dates or is_pending_in_amounts:
+                should_verify = False
+            elif appears_in_dates and not is_done_in_dates:
+                should_verify = False
+            elif appears_in_amounts and not is_done_in_amounts:
+                should_verify = False
+            
+            if should_verify:
+                mask = df_raw['Receipt Number'].astype(str).str.strip() == receipt_num
+                if mask.any():
+                    df_raw.loc[mask, 'Review Status'] = 'Verified'
+                    corrections_made = True
+
+
+        # 4. Save updated invoices to Supabase
+        if corrections_made:
+            logger.info(f"Updating {len(df_raw)} invoice records in Supabase")
+            if 'Date' in df_raw.columns:
+                df_raw['Date'] = safe_format_date_series(df_raw['Date'], output_format='%Y-%m-%d')
+            
+            # Convert back to snake_case for Supabase
+            reverse_map = {v: k for k, v in column_map.items()}
+            df_raw_snake = df_raw.rename(columns=reverse_map)
+            
+            # Clean NaN/Inf values (not JSON compliant)
+            df_raw_snake = df_raw_snake.replace([float('inf'), float('-inf')], None)
+            df_raw_snake = df_raw_snake.where(pd.notna(df_raw_snake), None)
+            
+            # Update invoices table (delete + re-insert)
+            db.delete('invoices', {'username': username})
+            for _, row in df_raw_snake.iterrows():
+                row_dict = row.to_dict()
+                row_dict['username'] = username
+                # Convert numeric types properly
+                row_dict = convert_numeric_types(row_dict)
+                db.insert('invoices', row_dict)
+
+        # 5. Build and save verified_invoices
+        final_df = build_verified(df_raw, df_date, df_amount)
+        logger.info(f"Built verified dataframe with {len(final_df)} rows")
+        
+        # Convert to snake_case and save
+        reverse_map = {v: k for k, v in column_map.items()}
+        final_df_snake = final_df.rename(columns=reverse_map)
+        
+        # Clean NaN/Inf values (not JSON compliant)
+        final_df_snake = final_df_snake.replace([float('inf'), float('-inf')], None)
+        final_df_snake = final_df_snake.where(pd.notna(final_df_snake), None)
+        
+        # Remove columns that exist in 'invoices' but NOT in 'verified_invoices'
+        # Based on actual Supabase schema comparison
+        # NOTE: image_hash is KEPT (not excluded) - needed for duplicate detection!
+        columns_to_exclude = [
+            'updated_at',           # Only in invoices table
+            'review_status',        # Workflow state field
+            'calculated_amount',    # Verification field
+            'amount_mismatch',      # Verification field
+            'confidence'            # AI confidence score
+        ]
+        
+        for col in columns_to_exclude:
+            if col in final_df_snake.columns:
+                final_df_snake = final_df_snake.drop(columns=[col])
+        
+        final_records = final_df_snake.to_dict('records')
+        
+        # Save to verified_invoices table
+        update_verified_invoices(username, final_records)
+        logger.info(f"verified_invoices updated with {len(final_records)} rows")
+
+        # 6. Clean up verification tables - CROSS-SHEET DEPENDENCY
+        # Get Receipt Numbers that are Done in each table
+        date_done_receipts = set()
+        date_pending_receipts = set()
+        if 'Verification Status' in df_date.columns and 'Receipt Number' in df_date.columns:
+            date_status_lower = df_date['Verification Status'].astype(str).str.lower().str.strip()
+            date_done_receipts = set(df_date.loc[date_status_lower == 'done', 'Receipt Number'].astype(str).str.strip())
+            date_pending_receipts = set(df_date.loc[date_status_lower.isin(['pending', 'duplicate receipt number']), 'Receipt Number'].astype(str).str.strip())
+        
+        amount_done_receipts = set()
+        amount_pending_receipts = set()
+        if 'Verification Status' in df_amount.columns and 'Receipt Number' in df_amount.columns:
+            amount_status_lower = df_amount['Verification Status'].astype(str).str.lower().str.strip()
+            amount_done_receipts = set(df_amount.loc[amount_status_lower == 'done', 'Receipt Number'].astype(str).str.strip())
+            amount_pending_receipts = set(df_amount.loc[amount_status_lower.isin(['pending', 'duplicate receipt number']), 'Receipt Number'].astype(str).str.strip())
+        
+        # Clean verification_dates
+        if 'Verification Status' in df_date.columns:
+            def should_keep_date_record(row):
+                status = str(row.get('Verification Status', '')).lower().strip()
+                receipt_num = str(row.get('Receipt Number', '')).strip()
+                
+                if status in ['pending', 'duplicate receipt number']:
+                    return True
+                
+                if status == 'done':
+                    if receipt_num in amount_pending_receipts:
+                        return True
+                    return False
+                
+                return False
+            
+            df_date_clean = df_date[df_date.apply(should_keep_date_record, axis=1)].copy()
+            df_date_clean_snake = df_date_clean.rename(columns=reverse_map)
+            
+            # Clean NaN/Inf values (not JSON compliant)
+            df_date_clean_snake = df_date_clean_snake.replace([float('inf'), float('-inf')], None)
+            df_date_clean_snake = df_date_clean_snake.where(pd.notna(df_date_clean_snake), None)
+            
+            clean_date_records = df_date_clean_snake.to_dict('records')
+            
+            # Update verification_dates
+            from database_helpers import update_verification_records
+            update_verification_records(username, 'verification_dates', clean_date_records)
+            logger.info(f"verification_dates cleaned: {len(clean_date_records)} records remain")
+
+        # Clean verification_amounts
+        if 'Verification Status' in df_amount.columns:
+            def should_keep_amount_record(row):
+                status = str(row.get('Verification Status', '')).lower().strip()
+                receipt_num = str(row.get('Receipt Number', '')).strip()
+                
+                if status in ['pending', 'duplicate receipt number']:
+                    return True
+                
+                if status == 'done':
+                    if receipt_num in date_pending_receipts:
+                        return True
+                    return False
+                
+                return False
+            
+            df_amount_clean = df_amount[df_amount.apply(should_keep_amount_record, axis=1)].copy()
+            df_amount_clean_snake = df_amount_clean.rename(columns=reverse_map)
+            
+            # Clean NaN/Inf values (not JSON compliant)
+            df_amount_clean_snake = df_amount_clean_snake.replace([float('inf'), float('-inf')], None)
+            df_amount_clean_snake = df_amount_clean_snake.where(pd.notna(df_amount_clean_snake), None)
+            
+            clean_amount_records = df_amount_clean_snake.to_dict('records')
+            
+            # Update verification_amounts
+            update_verification_records(username, 'verification_amounts', clean_amount_records)
+            logger.info(f"verification_amounts cleaned: {len(clean_amount_records)} records remain")
+
+        results["success"] = True
+        results["message"] = "Sync & Finish completed successfully"
+        results["records_synced"] = len(final_records)
+        
+    except Exception as e:
+        logger.error(f"Error in Supabase sync workflow: {e}")
+        results["message"] = f"Sync failed: {str(e)}"
+        raise
+    
+    return results

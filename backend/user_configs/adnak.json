@@ -1,0 +1,12 @@
+{
+  "username": "Adnak",
+  "display_name": "Adnak Garage",
+  "industry": "automobile",
+  "r2_bucket": "adnak-invoices",
+  "dashboard_url": "https://lookerstudio.google.com/reporting/2c91f3c2-92cb-44c0-9bf5-b4697caadaf0",
+  "extends_template": "automobile",
+  "column_label_overrides": {
+    "car_number": "Vehicle Registration",
+    "customer_name": "Customer Name"
+  }
+}
