@@ -720,7 +720,7 @@ async def run_sync_verified_logic_supabase(username: str) -> Dict[str, Any]:
 
         # 4. Save updated invoices to Supabase
         if corrections_made:
-            logger.info(f"Updating {len(df_raw)} invoice records in Supabase")
+            logger.info(f"Updating corrected invoice records in Supabase")
             if 'Date' in df_raw.columns:
                 df_raw['Date'] = safe_format_date_series(df_raw['Date'], output_format='%Y-%m-%d')
             
@@ -732,14 +732,19 @@ async def run_sync_verified_logic_supabase(username: str) -> Dict[str, Any]:
             df_raw_snake = df_raw_snake.replace([float('inf'), float('-inf')], None)
             df_raw_snake = df_raw_snake.where(pd.notna(df_raw_snake), None)
             
-            # Update invoices table (delete + re-insert)
-            db.delete('invoices', {'username': username})
+            # FIXED: Use upsert instead of delete-all to preserve existing invoices
+            # Only update records that were corrected (appeared in review tables)
+            # This ensures new uploads are always appended, never replaced
+            updated_count = 0
             for _, row in df_raw_snake.iterrows():
                 row_dict = row.to_dict()
                 row_dict['username'] = username
                 # Convert numeric types properly
                 row_dict = convert_numeric_types(row_dict)
-                db.insert('invoices', row_dict)
+                db.upsert('invoices', row_dict)
+                updated_count += 1
+            
+            logger.info(f"✅ Upserted {updated_count} invoice records (preserving all existing data)")
 
         # 5. Build and save verified_invoices
         final_df = build_verified(df_raw, df_date, df_amount)

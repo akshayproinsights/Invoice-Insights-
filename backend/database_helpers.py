@@ -143,7 +143,7 @@ def get_verification_amounts(username: str) -> List[Dict[str, Any]]:
 
 def update_verified_invoices(username: str, data: List[Dict[str, Any]]) -> bool:
     """
-    Update verified invoices (replace all records).
+    Update verified invoices using upsert (preserves existing records).
     
     Args:
         username: Username for RLS filtering
@@ -155,20 +155,18 @@ def update_verified_invoices(username: str, data: List[Dict[str, Any]]) -> bool:
     try:
         db = get_database_client()
         
-        # Delete existing verified invoices for this user
-        db.delete('verified_invoices', {'username': username})
-        
-        # Insert new records
+        # FIXED: Use upsert instead of delete-all to preserve existing verified invoices
+        # This ensures data is always appended, never replaced
         for record in data:
             record['username'] = username  # Ensure username is set
             record = convert_numeric_types(record)
-            db.insert('verified_invoices', record)
+            db.upsert('verified_invoices', record)
         
-        logger.info(f"Updated {len(data)} verified invoices for {username}")
+        logger.info(f"✅ Upserted {len(data)} verified invoices for {username} (preserving existing data)")
         return True
     
     except Exception as e:
-        logger.error(f"Error updating verified invoices for {username}: {e}")
+        logger.error(f"Error upserting verified invoices for {username}: {e}")
         return False
 
 
@@ -199,10 +197,14 @@ def update_verification_records(username: str, table: str, data: List[Dict[str, 
     """
     Update verification records (replace all for user).
     
+    NOTE: This uses delete-all-then-insert pattern intentionally!
+    Verification tables need to remove "Done" records after Sync & Finish.
+    The caller (verification.py) filters the data to only include records that should remain.
+    
     Args:
         username: Username for RLS filtering
         table: Table name ('verification_dates' or 'verification_amounts')
-        data: List of record dictionaries
+        data: List of record dictionaries (already filtered to keep only Pending/Duplicate)
     
     Returns:
         True if successful, False otherwise
@@ -210,16 +212,16 @@ def update_verification_records(username: str, table: str, data: List[Dict[str, 
     try:
         db = get_database_client()
         
-        # Delete existing records for this user
+        # Delete existing records for this user (removes "Done" records)
         db.delete(table, {'username': username})
         
-        # Insert new records
+        # Insert filtered records (only Pending/Duplicate)
         for record in data:
             record['username'] = username  # Ensure username is set
             record = convert_numeric_types(record)
             db.insert(table, record)
         
-        logger.info(f"Updated {len(data)} records in {table} for {username}")
+        logger.info(f"Updated {len(data)} records in {table} for {username} (removed Done records)")
         return True
     
     except Exception as e:
