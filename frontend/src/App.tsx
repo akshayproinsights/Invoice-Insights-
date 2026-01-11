@@ -10,7 +10,6 @@ import ReviewInvoiceDetailsPage from './pages/ReviewInvoiceDetailsPage';
 import VerifiedInvoicesPage from './pages/VerifiedInvoicesPage';
 import InventoryUploadPage from './pages/InventoryUploadPage';
 import VerifyPartsPage from './pages/VerifyPartsPage';
-import VendorMappingPage from './pages/VendorMappingPage';
 import InventoryMappedPage from './pages/InventoryMappedPage';
 import CurrentStockPage from './pages/CurrentStockPage';
 
@@ -50,7 +49,6 @@ function App() {
               <Route path="inventory/stock" element={<CurrentStockPage />} />
               <Route path="inventory/upload" element={<InventoryUploadPage />} />
               <Route path="inventory/verify" element={<VerifyPartsPage />} />
-              <Route path="inventory/mapping" element={<VendorMappingPage />} />
               <Route path="inventory/mapped" element={<InventoryMappedPage />} />
 
               {/* Legacy routes - redirect to new paths */}

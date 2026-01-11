@@ -7,10 +7,12 @@ export interface StockLevel {
     internal_item_name: string;
     vendor_description: string | null;
     customer_items: string | null;  // Comma-separated list of customer items
+    customer_items_array?: string[];  // Multi-select from uploaded sheets
     current_stock: number;
     total_in: number;
     total_out: number;
     reorder_point: number;
+    uploaded_reorder_point?: number;  // From uploaded sheet
     vendor_rate: number | null;
     customer_rate: number | null;
     unit_value: number;
@@ -20,6 +22,9 @@ export interface StockLevel {
     status?: string;
     created_at: string;
     updated_at: string;
+    old_stock?: number;  // From uploaded mapping sheet
+    has_uploaded_data?: boolean;  // Flag for highlighting
+    uploaded_at?: string;  // Timestamp of upload
 }
 
 export interface StockSummary {
@@ -39,6 +44,7 @@ export interface StockAdjustment {
 export interface StockUpdate {
     reorder_point?: number;
     unit_value?: number;
+    old_stock?: number;
 }
 
 export interface StockTransaction {

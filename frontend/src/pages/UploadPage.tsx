@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react';
-import { Upload as UploadIcon, X, FileImage, Loader2, CheckCircle, XCircle } from 'lucide-react';
+import { Upload as UploadIcon, X, Loader2, CheckCircle, XCircle } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { uploadAPI } from '../services/api';
 import { useQueryClient } from '@tanstack/react-query';
@@ -185,16 +185,13 @@ const UploadPage: React.FC = () => {
                 // Handle completion or failure
                 if (status.status === 'completed' || status.status === 'failed') {
                     clearInterval(pollInterval);
-                    setIsProcessing(false);
 
                     if (status.status === 'completed') {
-                        // Clear files and reset
-                        setFiles([]);
-                        setUploadedFiles([]);
-
-                        // Invalidate queries to refresh data
-                        queryClient.invalidateQueries({ queryKey: ['invoices'] });
-                        queryClient.invalidateQueries({ queryKey: ['review'] });
+                        // Call finishProcessing to properly set completion state
+                        // This keeps files visible and shows Check Pending Sales button
+                        finishProcessing();
+                    } else {
+                        setIsProcessing(false);
                     }
                 }
             }, 1000); // Poll every 1 second for responsive updates
@@ -312,7 +309,8 @@ const UploadPage: React.FC = () => {
         });
 
         setIsProcessing(false);
-        setFiles([]);
+        // DON'T clear files here - keep them visible so user can see completion state
+        // setFiles([]);  // Commented out to keep the two-column layout visible
         setUploadedFiles([]);
         setDuplicateQueue([]);
         setFilesToSkip([]);
@@ -323,20 +321,13 @@ const UploadPage: React.FC = () => {
     };
 
     return (
-        <div className="max-w-4xl mx-auto space-y-6">
-            <div>
-                <h1 className="text-3xl font-bold text-gray-900">Upload & Process Invoices</h1>
-                <p className="text-gray-600 mt-2">
-                    Upload invoice images for automated data extraction
-                </p>
-            </div>
-
+        <div className="max-w-4xl mx-auto space-y-4">
             {/* Upload Area */}
             <div
                 onDragOver={handleDragOver}
                 onDragLeave={handleDragLeave}
                 onDrop={handleDrop}
-                className={`border-2 border-dashed rounded-xl p-12 text-center transition ${isDragging
+                className={`border-2 border-dashed rounded-xl p-10 text-center transition ${isDragging
                     ? 'border-blue-500 bg-blue-50'
                     : 'border-gray-300 bg-white hover:border-gray-400'
                     }`}
@@ -345,7 +336,7 @@ const UploadPage: React.FC = () => {
                 <p className="text-lg font-medium text-gray-700 mb-2">
                     Drop invoice images here
                 </p>
-                <p className="text-sm text-gray-500 mb-4">
+                <p className="text-sm text-gray-500 mb-3">
                     or click to browse (JPG, PNG supported)
                 </p>
                 <label className="inline-block">
@@ -362,187 +353,231 @@ const UploadPage: React.FC = () => {
                 </label>
             </div>
 
-            {/* File List */}
+            {/* Two-Column Layout: Image Preview (Left) + Processing Status (Right) */}
             {files.length > 0 && (
-                <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-                    <h3 className="text-lg font-semibold text-gray-900 mb-4">
-                        Selected Files ({files.length})
-                    </h3>
-                    <div className="space-y-2">
-                        {files.map((file, index) => (
-                            <div
-                                key={index}
-                                className="flex items-center justify-between p-3 bg-gray-50 rounded-lg"
-                            >
-                                <div className="flex items-center space-x-3">
-                                    <FileImage size={20} className="text-gray-400" />
-                                    <span className="text-sm font-medium text-gray-700">{file.name}</span>
-                                    <span className="text-xs text-gray-500">
-                                        {(file.size / 1024 / 1024).toFixed(2)} MB
-                                    </span>
-                                </div>
-                                <button
-                                    onClick={() => removeFile(index)}
-                                    className="text-red-500 hover:text-red-700 transition"
-                                    disabled={isUploading || isProcessing}
-                                >
-                                    <X size={20} />
-                                </button>
-                            </div>
-                        ))}
-                    </div>
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    {/* LEFT COLUMN: Image Preview & Upload Button */}
+                    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+                        <h3 className="text-base font-semibold text-gray-900 mb-3">
+                            Selected Files ({files.length})
+                        </h3>
 
-                    {/* Upload Progress Bar */}
-                    {isUploading && uploadProgress > 0 && (
-                        <div className="mt-4">
-                            <div className="flex justify-between items-center mb-2">
-                                <span className="text-sm font-medium text-gray-700">
-                                    Uploading files... {uploadedCount}/{totalToUpload}
-                                </span>
-                                <div className="flex items-center gap-3">
-                                    <span className="text-sm font-medium text-blue-600">
+                        {/* Scrollable Image Grid - Increased height */}
+                        <div className="max-h-[280px] overflow-y-auto border border-gray-200 rounded-lg p-3 bg-gray-50 mb-3">
+                            <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-3">
+                                {files.map((file, index) => (
+                                    <div
+                                        key={index}
+                                        className="relative group aspect-square bg-white border-2 border-gray-200 rounded-lg overflow-hidden hover:border-blue-400 transition-all shadow-sm hover:shadow-md"
+                                    >
+                                        {/* Image Preview */}
+                                        <img
+                                            src={URL.createObjectURL(file)}
+                                            alt={file.name}
+                                            className="w-full h-full object-cover"
+                                        />
+
+                                        {/* Overlay with file info */}
+                                        <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity">
+                                            <div className="absolute bottom-0 left-0 right-0 p-1">
+                                                <p className="text-white text-[10px] font-medium truncate">
+                                                    {file.name}
+                                                </p>
+                                            </div>
+                                        </div>
+
+                                        {/* Remove button */}
+                                        <button
+                                            onClick={() => removeFile(index)}
+                                            className="absolute top-0.5 right-0.5 bg-red-500 hover:bg-red-600 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
+                                            disabled={isUploading || isProcessing}
+                                            title="Remove"
+                                        >
+                                            <X size={12} />
+                                        </button>
+
+                                        {/* File number badge */}
+                                        <div className="absolute top-0.5 left-0.5 bg-blue-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded">
+                                            #{index + 1}
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+
+                        {/* Upload Progress Bar */}
+                        {isUploading && uploadProgress > 0 && (
+                            <div className="mb-3">
+                                <div className="flex justify-between items-center mb-1">
+                                    <span className="text-xs font-medium text-gray-700">
+                                        Uploading... {uploadedCount}/{totalToUpload}
+                                    </span>
+                                    <span className="text-xs font-medium text-blue-600">
                                         {uploadProgress}%
                                     </span>
-                                    {estimatedTimeRemaining !== null && estimatedTimeRemaining > 0 && (
-                                        <span className="text-xs text-gray-500">
-                                            ~{formatTimeRemaining(estimatedTimeRemaining)} remaining
-                                        </span>
+                                </div>
+                                <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+                                    <div
+                                        className="h-full bg-gradient-to-r from-blue-500 to-blue-600 transition-all duration-300 ease-out rounded-full"
+                                        style={{
+                                            width: `${uploadProgress}%`
+                                        }}
+                                    />
+                                </div>
+                                {estimatedTimeRemaining !== null && estimatedTimeRemaining > 0 && (
+                                    <p className="text-xs text-gray-500 mt-1">
+                                        ~{formatTimeRemaining(estimatedTimeRemaining)} remaining
+                                    </p>
+                                )}
+                            </div>
+                        )}
+
+                        {/* Upload & Process Button - Hide when completed */}
+                        {processingStatus?.status !== 'completed' && (
+                            <button
+                                onClick={() => handleUploadAndProcess()}
+                                disabled={isUploading || isProcessing}
+                                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 px-4 rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+                            >
+                                {isUploading && <Loader2 className="animate-spin mr-2" size={18} />}
+                                {isProcessing && <Loader2 className="animate-spin mr-2" size={18} />}
+                                {isUploading
+                                    ? `Uploading... ${uploadProgress}%`
+                                    : isProcessing
+                                        ? 'Processing...'
+                                        : 'Upload & Process'}
+                            </button>
+                        )}
+                    </div>
+
+                    {/* RIGHT COLUMN: Processing Status */}
+                    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+                        {processingStatus ? (
+                            <>
+                                <div className="flex items-center justify-between mb-3">
+                                    <h3 className="text-base font-semibold text-gray-900">Processing Status</h3>
+                                    {processingStatus.status === 'completed' && (
+                                        <CheckCircle className="text-green-500" size={20} />
+                                    )}
+                                    {processingStatus.status === 'failed' && (
+                                        <XCircle className="text-red-500" size={20} />
+                                    )}
+                                    {processingStatus.status === 'processing' && (
+                                        <Loader2 className="animate-spin text-blue-500" size={20} />
                                     )}
                                 </div>
-                            </div>
-                            <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
-                                <div
-                                    className="h-full bg-gradient-to-r from-blue-500 to-blue-600 transition-all duration-300 ease-out rounded-full"
-                                    style={{
-                                        width: `${uploadProgress}%`
-                                    }}
-                                />
-                            </div>
-                        </div>
-                    )}
 
-                    <button
-                        onClick={() => handleUploadAndProcess()}
-                        disabled={isUploading || isProcessing}
-                        className="mt-6 w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-4 rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
-                    >
-                        {isUploading && <Loader2 className="animate-spin mr-2" size={20} />}
-                        {isProcessing && <Loader2 className="animate-spin mr-2" size={20} />}
-                        {isUploading
-                            ? `Uploading... ${uploadProgress}%`
-                            : isProcessing
-                                ? 'Processing...'
-                                : 'Upload & Process'}
-                    </button>
-                </div>
-            )}
+                                {/* Progress Bar */}
+                                {processingStatus.status === 'processing' && processingStatus.progress && (
+                                    <div className="mb-3">
+                                        <div className="flex justify-between items-center mb-1">
+                                            <span className="text-xs font-medium text-gray-700">
+                                                {processingStatus.progress.processed || 0} / {processingStatus.progress.total || 0}
+                                            </span>
+                                            <span className="text-xs font-medium text-blue-600">
+                                                {Math.round(((processingStatus.progress.processed || 0) / (processingStatus.progress.total || 1)) * 100)}%
+                                            </span>
+                                        </div>
+                                        <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+                                            <div
+                                                className="h-full bg-gradient-to-r from-blue-500 to-blue-600 transition-all duration-300 ease-out rounded-full"
+                                                style={{
+                                                    width: `${Math.min(100, ((processingStatus.progress.processed || 0) / (processingStatus.progress.total || 1)) * 100)}%`
+                                                }}
+                                            />
+                                        </div>
+                                        {/* Time Estimate */}
+                                        {(() => {
+                                            const processed = processingStatus.progress.processed || 0;
+                                            const total = processingStatus.progress.total || 1;
+                                            const remaining = total - processed;
 
-            {/* Processing Status */}
-            {processingStatus && (
-                <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-                    <div className="flex items-center justify-between mb-4">
-                        <h3 className="text-lg font-semibold text-gray-900">Processing Status</h3>
-                        {processingStatus.status === 'completed' && (
-                            <CheckCircle className="text-green-500" size={24} />
-                        )}
-                        {processingStatus.status === 'failed' && (
-                            <XCircle className="text-red-500" size={24} />
-                        )}
-                        {processingStatus.status === 'processing' && (
-                            <Loader2 className="animate-spin text-blue-500" size={24} />
-                        )}
-                    </div>
+                                            if (processed > 0 && remaining > 0 && (processingStatus as any).start_time) {
+                                                const startTime = new Date((processingStatus as any).start_time).getTime();
+                                                const now = Date.now();
+                                                const elapsedSeconds = (now - startTime) / 1000;
+                                                const avgTimePerFile = elapsedSeconds / processed;
+                                                const estimatedSecondsRemaining = Math.ceil(avgTimePerFile * remaining);
 
-                    {/* Progress Bar */}
-                    {processingStatus.status === 'processing' && processingStatus.progress && (
-                        <div className="mb-4">
-                            <div className="flex justify-between items-center mb-2">
-                                <span className="text-sm font-medium text-gray-700">
-                                    Progress: {processingStatus.progress.processed || 0} / {processingStatus.progress.total || 0}
-                                </span>
-                                <span className="text-sm font-medium text-blue-600">
-                                    {Math.round(((processingStatus.progress.processed || 0) / (processingStatus.progress.total || 1)) * 100)}%
-                                </span>
-                            </div>
-                            <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
-                                <div
-                                    className="h-full bg-gradient-to-r from-blue-500 to-blue-600 transition-all duration-300 ease-out rounded-full"
-                                    style={{
-                                        width: `${Math.min(100, ((processingStatus.progress.processed || 0) / (processingStatus.progress.total || 1)) * 100)}%`
-                                    }}
-                                />
-                            </div>
-                            {/* Time Estimate */}
-                            {(() => {
-                                const processed = processingStatus.progress.processed || 0;
-                                const total = processingStatus.progress.total || 1;
-                                const remaining = total - processed;
+                                                const minutes = Math.floor(estimatedSecondsRemaining / 60);
+                                                const seconds = estimatedSecondsRemaining % 60;
 
-                                // Calculate estimated time if we have progress
-                                if (processed > 0 && remaining > 0 && (processingStatus as any).start_time) {
-                                    const startTime = new Date((processingStatus as any).start_time).getTime();
-                                    const now = Date.now();
-                                    const elapsedSeconds = (now - startTime) / 1000;
-                                    const avgTimePerFile = elapsedSeconds / processed;
-                                    const estimatedSecondsRemaining = Math.ceil(avgTimePerFile * remaining);
+                                                return (
+                                                    <p className="text-xs text-blue-600 mt-1 font-medium">
+                                                        ⏱️ ~{minutes > 0 ? `${minutes}m ` : ''}{seconds}s remaining
+                                                    </p>
+                                                );
+                                            }
+                                            return null;
+                                        })()}
+                                        {(processingStatus as any).current_file && (
+                                            <p className="text-xs text-gray-600 mt-1 truncate">
+                                                Processing: {(processingStatus as any).current_file}
+                                            </p>
+                                        )}
+                                    </div>
+                                )}
 
-                                    const minutes = Math.floor(estimatedSecondsRemaining / 60);
-                                    const seconds = estimatedSecondsRemaining % 60;
+                                <div className="space-y-2 text-xs">
+                                    <div className="flex justify-between">
+                                        <span className="text-gray-600">Total Files:</span>
+                                        <span className="font-medium">{processingStatus.progress?.total || 0}</span>
+                                    </div>
+                                    <div className="flex justify-between">
+                                        <span className="text-gray-600">Processed:</span>
+                                        <span className="font-medium text-green-600">
+                                            {processingStatus.progress?.processed || 0}
+                                        </span>
+                                    </div>
+                                    {(processingStatus.progress?.failed || 0) > 0 && (
+                                        <div className="flex justify-between">
+                                            <span className="text-gray-600">Failed:</span>
+                                            <span className="font-medium text-red-600">
+                                                {processingStatus.progress?.failed || 0}
+                                            </span>
+                                        </div>
+                                    )}
+                                    <div className="pt-2 border-t border-gray-200">
+                                        <p className="text-xs text-gray-700">{processingStatus.message}</p>
+                                    </div>
+                                </div>
 
-                                    return (
-                                        <p className="text-xs text-blue-600 mt-2 font-medium">
-                                            ⏱️ ~{minutes > 0 ? `${minutes}m ` : ''}{seconds}s remaining
+                                {processingStatus.status === 'completed' && (
+                                    <div className="mt-3 p-3 bg-green-50 border border-green-200 rounded-lg">
+                                        <p className="text-xs font-medium text-green-800 mb-2">
+                                            ✓ Processing complete! Verify the extracted data.
                                         </p>
-                                    );
-                                }
-                                return null;
-                            })()}
-                            {(processingStatus as any).current_file && (
-                                <p className="text-xs text-gray-600 mt-2 truncate">
-                                    Processing: {(processingStatus as any).current_file}
-                                </p>
-                            )}
-                        </div>
-                    )}
-
-                    <div className="space-y-3">
-                        <div className="flex justify-between text-sm">
-                            <span className="text-gray-600">Total Files:</span>
-                            <span className="font-medium">{processingStatus.progress?.total || 0}</span>
-                        </div>
-                        <div className="flex justify-between text-sm">
-                            <span className="text-gray-600">Processed:</span>
-                            <span className="font-medium text-green-600">
-                                {processingStatus.progress?.processed || 0}
-                            </span>
-                        </div>
-                        {(processingStatus.progress?.failed || 0) > 0 && (
-                            <div className="flex justify-between text-sm">
-                                <span className="text-gray-600">Failed:</span>
-                                <span className="font-medium text-red-600">
-                                    {processingStatus.progress?.failed || 0}
-                                </span>
+                                        <button
+                                            onClick={() => {
+                                                // Clear state and navigate
+                                                setFiles([]);
+                                                setProcessingStatus(null);
+                                                navigate('/sales/review');
+                                            }}
+                                            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-3 rounded-lg transition flex items-center justify-center gap-2 text-sm"
+                                        >
+                                            <CheckCircle size={16} />
+                                            Check Pending Sales
+                                        </button>
+                                    </div>
+                                )}
+                            </>
+                        ) : (
+                            <div className="h-full flex items-center justify-center text-gray-300 border-2 border-dashed border-gray-200 rounded-lg p-6">
+                                <div className="text-center">
+                                    <div className="mx-auto mb-3 w-12 h-12 rounded-full bg-gray-100 flex items-center justify-center">
+                                        <svg className="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                        </svg>
+                                    </div>
+                                    <p className="text-xs font-medium text-gray-500 mb-1">No Active Processing</p>
+                                    <p className="text-xs text-gray-400">
+                                        Processing details will appear here after you click "Upload & Process"
+                                    </p>
+                                </div>
                             </div>
                         )}
-                        <div className="pt-3 border-t border-gray-200">
-                            <p className="text-sm text-gray-700">{processingStatus.message}</p>
-                        </div>
                     </div>
-
-                    {processingStatus.status === 'completed' && (
-                        <div className="mt-4 p-4 bg-green-50 border border-green-200 rounded-lg">
-                            <p className="text-sm font-medium text-green-800 mb-3">
-                                ✓ Processing complete! Go to Check Pending Sales to verify the extracted data.
-                            </p>
-                            <button
-                                onClick={() => navigate('/sales/review')}
-                                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 px-4 rounded-lg transition flex items-center justify-center gap-2"
-                            >
-                                <CheckCircle size={18} />
-                                Check Pending Sales
-                            </button>
-                        </div>
-                    )}
                 </div>
             )}
 

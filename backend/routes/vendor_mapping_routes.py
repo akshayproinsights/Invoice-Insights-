@@ -406,6 +406,7 @@ async def bulk_save_entries(
     """
     Bulk save/upsert vendor mapping entries.
     Uses vendor_description + part_number as unique key.
+    Also updates stock_levels.customer_items with the mapped customer item.
     """
     try:
         username = current_user.get("username", "")
@@ -439,6 +440,12 @@ async def bulk_save_entries(
                     entry_data,
                     on_conflict="username,vendor_description,part_number"
                 ).execute()
+                
+                # ALSO update stock_levels.customer_items if we have a customer_item_name
+                if entry.customer_item_name and entry.part_number:
+                    db.client.table("stock_levels").update({
+                        "customer_items": entry.customer_item_name  # Plain string, NOT array
+                    }).eq("part_number", entry.part_number).eq("username", username).execute()
                 
                 saved_count += 1
             
@@ -485,4 +492,36 @@ async def delete_entry(
     
     except Exception as e:
         logger.error(f"Error deleting entry: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/entries/by-part/{part_number}")
+async def delete_entry_by_part(
+    part_number: str,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Delete vendor mapping entry by part number.
+    Used when clearing customer item mapping from stock register.
+    Also clears the customer_items field in stock_levels table.
+    """
+    try:
+        username = current_user.get("username", "")
+        db = get_database_client()
+        
+        # Delete all mappings for this part number and user
+        response = db.client.table("vendor_mapping_entries").delete().eq(
+            "part_number", part_number
+        ).eq("username", username).execute()
+        
+        # Also update stock_levels to clear customer_items field
+        db.client.table("stock_levels").update({
+            "customer_items": None
+        }).eq("part_number", part_number).eq("username", username).execute()
+        
+        logger.info(f"Deleted vendor mapping and cleared stock_levels for part {part_number}")
+        return {"success": True, "deleted": True}
+    
+    except Exception as e:
+        logger.error(f"Error deleting vendor mapping: {e}")
         raise HTTPException(status_code=500, detail=str(e))

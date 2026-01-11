@@ -43,12 +43,20 @@ async def get_review_dates(
         # This provides full visibility into what happened to each upload
         # Cleanup happens only during Sync & Finish
         
-        # Convert to DataFrame for NaN/Inf handling
-        if records:
-            df = pd.DataFrame(records)
-            df = df.replace([np.inf, -np.inf], None)
-            df = df.where(pd.notnull(df), None)
-            records = df.to_dict('records')
+        # Custom recursive cleaning for nested structures (like bbox lists)
+        def clean_for_json(data):
+            if isinstance(data, dict):
+                return {k: clean_for_json(v) for k, v in data.items()}
+            elif isinstance(data, list):
+                return [clean_for_json(v) for v in data]
+            elif isinstance(data, float):
+                if np.isnan(data) or np.isinf(data):
+                    return None
+                return data
+            return data
+
+        # Apply recursive cleaning to all records
+        records = [clean_for_json(record) for record in records]
         
         return {
             "records": records if records else [],
@@ -94,6 +102,7 @@ async def update_single_review_date(
 ):
     """
     Update a single verification_dates record by row_id
+    If receipt_number changes, also update all related line items
     """
     username = current_user.get("username")
     
@@ -101,11 +110,22 @@ async def update_single_review_date(
         raise HTTPException(status_code=400, detail="No username in token")
     
     row_id = record.get('row_id')
+    logger.info(f"DEBUG: Received record keys: {list(record.keys())}")
+    logger.info(f"DEBUG: row_id value: {row_id}")
     if not row_id:
+        logger.error(f"DEBUG: row_id is missing! Full record: {record}")
         raise HTTPException(status_code=400, detail="row_id is required for update")
     
     try:
         db = get_database_client()
+        
+        # CRITICAL: Get the OLD record to check if receipt_number changed
+        old_record = db.query('verification_dates').eq('username', username).eq('row_id', row_id).execute().data
+        if not old_record or len(old_record) == 0:
+            raise HTTPException(status_code=404, detail=f"Record with row_id {row_id} not found")
+        
+        old_receipt_number = old_record[0].get('receipt_number')
+        new_receipt_number = record.get('receipt_number')
         
         # Ensure username is set in the record
         record['username'] = username
@@ -114,28 +134,65 @@ async def update_single_review_date(
         from database_helpers import convert_numeric_types
         record = convert_numeric_types(record)
         
-        # Filter to only columns that exist in verification_dates
+        # Filter to only columns that exist in verification_dates (exclude row_id from update data)
         valid_cols = {
             'id', 'username', 'receipt_number', 'date', 'audit_findings',
-            'verification_status', 'receipt_link', 'upload_date', 'row_id',
+            'verification_status', 'receipt_link', 'upload_date',
             'created_at', 'model_used', 'model_accuracy', 'input_tokens',
             'output_tokens', 'total_tokens', 'cost_inr', 'fallback_attempted',
             'fallback_reason', 'processing_errors', 'date_and_receipt_combined_bbox',
             'receipt_number_bbox', 'date_bbox'
         }
-        filtered_record = {k: v for k, v in record.items() if k in valid_cols}
+        update_data = {k: v for k, v in record.items() if k in valid_cols and k != 'row_id'}
         
-        # Delete the old record
-        db.delete('verification_dates', {'username': username, 'row_id': row_id})
-        
-        # Insert the updated record
-        db.insert('verification_dates', filtered_record)
+        # UPDATE 1: Update the header record itself
+        db.update('verification_dates', update_data, {'username': username, 'row_id': row_id})
         
         logger.info(f"Updated verification_dates record {row_id} for {username}")
         
+        # Check if receipt_number changed - handle propagation via header_id
+        new_receipt_number = record.get('receipt_number')
+        
+        if new_receipt_number:
+            # We use the header's row_id (or a separate ID column if available) as the stable ID
+            # In existing data, row_id acts as the unique identifier for the header
+            header_id = record.get('id')
+            
+            # If we don't have ID in the payload (rare), fetch it
+            if not header_id:
+                header_data = db.query('verification_dates').eq('username', username).eq('row_id', row_id).execute().data
+                if header_data:
+                    header_id = header_data[0].get('id')
+            
+            if header_id:
+                logger.info(f"Receipt number update: Propagating {new_receipt_number} to line items for header {header_id}")
+                
+                # Find associated line items using header_id
+                line_items = db.query('verification_amounts') \
+                    .eq('username', username) \
+                    .eq('header_id', header_id) \
+                    .execute().data
+                    
+                if line_items:
+                    logger.info(f"Found {len(line_items)} line items to update")
+                    
+                    # Update all associated line items with new receipt number
+                    # The header_id stays the same, preserving the link
+                    for item in line_items:
+                         db.update('verification_amounts', 
+                                  {'receipt_number': new_receipt_number}, 
+                                  {'username': username, 'row_id': item['row_id']})
+                                  
+                    logger.info(f"✓ Updated {len(line_items)} line items to receipt {new_receipt_number}")
+                else:
+                    logger.info(f"No line items found for header {header_id}")
+            else:
+                logger.warning(f"Could not find header ID for row_id {row_id}, skipping propagation")
+        
         return {
             "success": True,
-            "message": f"Updated record {row_id} successfully"
+            "message": f"Updated record {row_id} successfully",
+            "line_items_updated": len(line_items) if new_receipt_number and old_receipt_number != new_receipt_number and line_items else 0
         }
     
     except Exception as e:
@@ -149,7 +206,10 @@ async def delete_verification_record(
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     """
-    Delete a record from all tables (verification_dates, verification_amounts, invoices) by row_id
+    Delete a single line item record from ALL tables by row_id.
+    Used when deleting from Review Amounts tab (deletes only that specific line item).
+    
+    NOTE: After migration, all tables now have row_id column for consistent deletion.
     """
     username = current_user.get("username")
     
@@ -161,10 +221,15 @@ async def delete_verification_record(
         
         total_deleted = 0
         
-        # Delete from verification tables (they use row_id)
-        verification_tables = ['verification_dates', 'verification_amounts']
+        # All tables now have row_id column after migration
+        tables_to_clean = [
+            'verification_dates',
+            'verification_amounts',
+            'invoices',
+            'verified_invoices'
+        ]
         
-        for table_name in verification_tables:
+        for table_name in tables_to_clean:
             try:
                 result = db.delete(table_name, {'username': username, 'row_id': row_id})
                 if result:
@@ -175,13 +240,9 @@ async def delete_verification_record(
                 logger.warning(f"Error cleaning {table_name} for row_id {row_id}: {e}")
                 continue
         
-        # For invoices table, try to find by matching receipt_number if needed
-        # (invoices table uses 'id' column, not 'row_id')
-        # We skip invoices deletion since row_id format doesn't match id format
-        
         return {
             "success": True,
-            "message": f"Record {row_id} deleted from verification tables",
+            "message": f"Record {row_id} deleted from all tables",
             "records_deleted": total_deleted
         }
         
@@ -260,13 +321,20 @@ async def get_review_amounts(
         # SHOW ALL RECORDS - User wants to see all records regardless of status
         # Cleanup happens only during Sync & Finish
         
-        # Convert to DataFrame for NaN/Inf handling
-        if records:
-            df = pd.DataFrame(records)
-            df = df.replace([np.inf, -np.inf], None)
-            df = df.where(pd.notnull(df), None)
-            
-            records = df.to_dict('records')
+        # Custom recursive cleaning for nested structures (like bbox lists)
+        def clean_for_json(data):
+            if isinstance(data, dict):
+                return {k: clean_for_json(v) for k, v in data.items()}
+            elif isinstance(data, list):
+                return [clean_for_json(v) for v in data]
+            elif isinstance(data, float):
+                if np.isnan(data) or np.isinf(data):
+                    return None
+                return data
+            return data
+
+        # Apply recursive cleaning to all records
+        records = [clean_for_json(record) for record in records]
         
         return {
             "records": records if records else [],
@@ -332,24 +400,21 @@ async def update_single_review_amount(
         from database_helpers import convert_numeric_types
         record = convert_numeric_types(record)
         
-        # Filter to only columns that exist in verification_amounts
+        # Filter to only columns that exist in verification_amounts (exclude row_id from update data)
         valid_cols = {
             'id', 'username', 'receipt_number', 'description', 'quantity',
             'rate', 'amount', 'amount_mismatch', 'verification_status',
-            'receipt_link', 'row_id', 'created_at', 'model_used',
+            'receipt_link', 'created_at', 'model_used',
             'model_accuracy', 'input_tokens', 'output_tokens', 'total_tokens',
             'cost_inr', 'fallback_attempted', 'fallback_reason',
             'processing_errors', 'line_item_row_bbox', 'date_and_receipt_combined_bbox',
             'receipt_number_bbox', 'description_bbox', 'quantity_bbox',
             'rate_bbox', 'amount_bbox'
         }
-        filtered_record = {k: v for k, v in record.items() if k in valid_cols}
+        update_data = {k: v for k, v in record.items() if k in valid_cols and k != 'row_id'}
         
-        # Delete the old record
-        db.delete('verification_amounts', {'username': username, 'row_id': row_id})
-        
-        # Insert the updated record
-        db.insert('verification_amounts', filtered_record)
+        # UPDATE the record (not DELETE+INSERT)
+        db.update('verification_amounts', update_data, {'username': username, 'row_id': row_id})
         
         logger.info(f"Updated verification_amounts record {row_id} for {username}")
         

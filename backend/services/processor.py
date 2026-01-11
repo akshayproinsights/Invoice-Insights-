@@ -977,16 +977,17 @@ def process_invoices_batch(
             for row in all_rows:
                 try:
                     # Remove columns that don't exist in invoices table
-                    # invoices schema: id, username, receipt_number, date, customer, vehicle_number,
+                    # invoices schema: id, row_id, username, receipt_number, date, customer, vehicle_number,
                     #                  description, type, quantity, rate, amount, receipt_link,
                     #                  upload_date, image_hash, created_at, updated_at
                     # 
                     # Note: Many fields like customer_name, mobile_number, etc. are NOT in invoices
                     # but WILL BE in verified_invoices, so we keep them in the row data for later use
+                    # 
+                    # IMPORTANT: row_id is NOW in invoices table after migration!
                     excluded_columns = {
                         'amount_mismatch',      # Only for verification_amounts table
                         'calculated_amount',    # Only for verification tables  
-                        'row_id',              # invoices uses 'id' as primary key
                         'review_status',       # Not in invoices table
                         'confidence',          # Not in invoices
                         'receipt_number_bbox', # Not in invoices
@@ -1329,12 +1330,33 @@ def create_verification_records_supabase(all_rows: List[Dict[str, Any]], usernam
         
         logger.info(f"Created {date_insert_count} date verification records in Supabase")
         
+        # NEW: Fetch the inserted headers to get their IDs for linking
+        header_ids_map = {}  # receipt_number -> header_id
+        try:
+            for _, date_row in date_records.iterrows():
+                receipt_num = date_row.get('receipt_number')
+                if receipt_num:
+                    # Query to get the header ID we just created
+                    header_data = db.query('verification_dates') \
+                        .eq('username', username) \
+                        .eq('receipt_number', receipt_num) \
+                        .execute().data
+                    
+                    if header_data and len(header_data) > 0:
+                        # Take the most recent one (should be what we just inserted)
+                        header_id = header_data[0].get('id')
+                        if header_id:
+                            header_ids_map[receipt_num] = header_id
+                            logger.debug(f"Header ID for receipt {receipt_num}: {header_id}")
+        except Exception as e:
+            logger.warning(f"Could not fetch header IDs: {e}")
+        
         # =============================================
         # VERIFY AMOUNT - Filter Amount Mismatch > 0
         # =============================================
         
         amount_records = df_new.copy()
-        
+       
         # CRITICAL: Add receipt_link to each row (it's a header field, not in line items)
         if not df_new.empty and 'receipt_link' in df_new.columns:
             # receipt_link should already be in df_new from convert_to_dataframe_rows
@@ -1364,14 +1386,20 @@ def create_verification_records_supabase(all_rows: List[Dict[str, Any]], usernam
         # Proceed with all records (both Done and Pending)
         if not amount_records.empty:
             
-            # Insert amount verification records into Supabase
+            # Insert amount verification records into Supabase WITH header_id
             amount_insert_count = 0
             for _, row in amount_records.iterrows():
                 try:
+                    receipt_num = row.get('receipt_number')
+                    
+                    # NEW: Get header_id from our map
+                    header_id = header_ids_map.get(receipt_num) if header_ids_map else None
+                    
                     amount_row = {
                         'username': username,
                         'verification_status': row.get('verification_status'),  # Use calculated status (Done or Pending)
-                        'receipt_number': row.get('receipt_number'),
+                        'receipt_number': receipt_num,
+                        'header_id': header_id,  # NEW: Link to header via stable ID
                         'description': row.get('description'),
                         'quantity': row.get('quantity'),
                         'rate': row.get('rate'),
@@ -1382,6 +1410,11 @@ def create_verification_records_supabase(all_rows: List[Dict[str, Any]], usernam
                         'line_item_row_bbox': row.get('line_item_row_bbox'),  # Only use row-level bbox
                         'date_and_receipt_combined_bbox': row.get('date_and_receipt_combined_bbox')
                     }
+                    
+                    # Log if we're missing header_id (for debugging)
+                    if not header_id:
+                        logger.warning(f"No header_id found for receipt {receipt_num} when creating line item")
+                    
                     db.insert('verification_amounts', amount_row)
                     amount_insert_count += 1
                 except Exception as e:

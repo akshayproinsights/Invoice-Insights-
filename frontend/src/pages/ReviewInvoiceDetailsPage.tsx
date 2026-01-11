@@ -183,7 +183,18 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
         }, 500);
     };
 
+    const [isProcessing, setIsProcessing] = useState(false);
+
     const handleSyncFinish = async () => {
+        // Prevent multiple simultaneous clicks
+        if (isProcessing) {
+            console.log('⏸️ Sync already in progress, ignoring duplicate click');
+            return;
+        }
+
+        setIsProcessing(true);
+        console.log('🚀 Starting Sync & Finish process...');
+
         // Validate headers (records with Date field) - must have Receipt Number and Date
         const invalidHeaders = records.filter(r =>
             (r['Date'] !== undefined || r['date_bbox'] !== undefined) &&
@@ -204,14 +215,13 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
             if (invalidLineItems.length > 0) {
                 errorMsg.push(`${invalidLineItems.length} line item(s) missing Receipt Number`);
             }
+            console.error('❌ Validation failed:', errorMsg.join(', '));
             alert(`Cannot sync: ${errorMsg.join(', ')}.`);
+            setIsProcessing(false);
             return;
         }
 
-        if (!confirm('Are you sure you want to Sync & Finish? This will finalize all verified invoices.')) {
-            return;
-        }
-
+        // NO CONFIRMATION DIALOG - Start sync immediately
         try {
             setSyncProgress({
                 isOpen: true,
@@ -239,6 +249,8 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
         } catch (error) {
             setSyncProgress({ isOpen: false, stage: '', percentage: 0, message: '' });
             alert(`Error: ${error instanceof Error ? error.message : 'Unable to complete operation'} `);
+        } finally {
+            setIsProcessing(false);
         }
     };
 
@@ -372,7 +384,12 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
                                                             status={headerRecord['Verification Status'] || 'Pending'}
                                                             onChange={(newStatus: string) => {
                                                                 const idx = records.findIndex(r => r === headerRecord);
-                                                                handleFieldChange(idx, 'Verification Status', newStatus, true);
+                                                                // Update local state
+                                                                const updated = [...records];
+                                                                updated[idx] = { ...updated[idx], 'Verification Status': newStatus };
+                                                                setRecords(updated);
+                                                                // CRITICAL FIX: Save immediately to database
+                                                                updateDateMutation.mutate({ record: updated[idx] });
                                                             }}
                                                         />
                                                         {headerRecord['Row_Id'] && (
@@ -504,7 +521,14 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
                                                             <div className="flex gap-2">
                                                                 <StatusToggle
                                                                     status={record['Verification Status'] || 'Pending'}
-                                                                    onChange={(newStatus: string) => handleFieldChange(globalIdx, 'Verification Status', newStatus, true)}
+                                                                    onChange={(newStatus: string) => {
+                                                                        // Update local state
+                                                                        const updated = [...records];
+                                                                        updated[globalIdx] = { ...updated[globalIdx], 'Verification Status': newStatus };
+                                                                        setRecords(updated);
+                                                                        // CRITICAL FIX: Save immediately to database
+                                                                        updateAmountMutation.mutate({ record: updated[globalIdx] });
+                                                                    }}
                                                                 />
                                                                 {record['Row_Id'] && (
                                                                     <button

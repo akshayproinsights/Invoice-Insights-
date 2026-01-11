@@ -32,10 +32,18 @@ const ReviewAmountsPage: React.FC = () => {
 
     // Filter records based on showCompleted toggle
     const filteredRecords = useMemo(() => {
+        // DEBUG: Log first record to see actual column names
+        if (records.length > 0) {
+            console.log('🔍 DEBUG - First record keys:', Object.keys(records[0]));
+            console.log('🔍 DEBUG - First record Verification Status:', records[0]['Verification Status']);
+            console.log('🔍 DEBUG - First record verification_status:', records[0]['verification_status']);
+        }
+
         // Show Pending and Duplicate Receipt Number by default
         // If showCompleted is true, also show Done records
         return records.filter(r => {
             const status = r['Verification Status'] || 'Pending';
+            console.log('🔍 Filtering record - Status:', status, 'showCompleted:', showCompleted);
             if (status === 'Pending' || status === 'Duplicate Receipt Number') {
                 return true;
             }
@@ -141,13 +149,34 @@ const ReviewAmountsPage: React.FC = () => {
         }
     };
 
-    const handleDeleteRow = (index: number) => {
-        if (confirm('Are you sure you want to delete this row?')) {
-            const sortedRecord = sortedRecords[index];
-            const originalIndex = records.findIndex(r => r === sortedRecord);
-            const updated = records.filter((_, i) => i !== originalIndex);
-            setRecords(updated);
-            setHasChanges(true);
+    const handleDeleteRow = async (index: number) => {
+        const sortedRecord = sortedRecords[index];
+        const rowId = sortedRecord['Row_Id'] || sortedRecord['row_id'];
+
+        if (!rowId) {
+            alert('Cannot delete: No row ID found');
+            return;
+        }
+
+        if (confirm(`Are you sure you want to delete this line item? This will remove it from the entire system.`)) {
+            try {
+                // Call API to delete this specific line item from all tables
+                await reviewAPI.deleteRecord(rowId);
+
+                // Update frontend state
+                const originalIndex = records.findIndex(r => r === sortedRecord);
+                const updated = records.filter((_, i) => i !== originalIndex);
+                setRecords(updated);
+
+                // Refresh the page data
+                queryClient.invalidateQueries({ queryKey: ['review-dates'] });
+                queryClient.invalidateQueries({ queryKey: ['review-amounts'] });
+                queryClient.invalidateQueries({ queryKey: ['verified'] });
+
+                alert(`Line item deleted successfully`);
+            } catch (error) {
+                alert(`Error deleting line item: ${error instanceof Error ? error.message : 'Unknown error'}`);
+            }
         }
     };
 

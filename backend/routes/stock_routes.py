@@ -3,17 +3,31 @@ Stock Levels Management Routes
 Tracks real-time inventory stock based on vendor purchases and customer sales.
 """
 from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi.responses import Response
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
 import logging
 from datetime import datetime
 from rapidfuzz import fuzz
+from reportlab.lib.pagesizes import letter, A4
+from reportlab.lib import colors
+from reportlab.lib.units import inch
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
+from io import BytesIO
 
 from database import get_database_client
 from auth import get_current_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# ============================================================================
+# REORDER POINT CONFIGURATION - CHANGE HERE TO UPDATE DEFAULT
+# ============================================================================
+DEFAULT_REORDER_POINT = 2  # Change this value to update default for ALL items
+# ============================================================================
 
 
 # Pydantic Models
@@ -29,6 +43,7 @@ class StockUpdateRequest(BaseModel):
     """Update stock level fields"""
     reorder_point: Optional[float] = None
     unit_value: Optional[float] = None
+    old_stock: Optional[float] = None
 
 
 def normalize_part_number(part_number: str) -> str:
@@ -88,14 +103,14 @@ async def get_stock_levels(
             if status_filter == "out_of_stock":
                 items = [item for item in items if item.get("current_stock", 0) <= 0]
             elif status_filter == "low_stock":
-                items = [item for item in items if 0 < item.get("current_stock", 0) < item.get("reorder_point", 3)]
+                items = [item for item in items if 0 < item.get("current_stock", 0) < item.get("reorder_point", DEFAULT_REORDER_POINT)]
             elif status_filter == "in_stock":
-                items = [item for item in items if item.get("current_stock", 0) >= item.get("reorder_point", 3)]
+                items = [item for item in items if item.get("current_stock", 0) >= item.get("reorder_point", DEFAULT_REORDER_POINT)]
         
         # Add computed status field
         for item in items:
             stock = item.get("current_stock", 0)
-            reorder = item.get("reorder_point", 3)
+            reorder = item.get("reorder_point", DEFAULT_REORDER_POINT)
             
             if stock <= 0:
                 item["status"] = "Out of Stock"
@@ -105,6 +120,55 @@ async def get_stock_levels(
                 item["status"] = "In Stock"
         
         logger.info(f"Retrieved {len(items)} stock levels for {username}")
+        
+        # Merge with uploaded mapping sheet data
+        mapping_sheets_response = db.client.table("vendor_mapping_sheets")\
+            .select("part_number, customer_item, old_stock, reorder_point, uploaded_at")\
+            .eq("username", username)\
+            .eq("status", "completed")\
+            .execute()
+        
+        # Create mapping dict
+        mapping_data_dict = {}
+        for sheet_row in (mapping_sheets_response.data or []):
+            part = sheet_row.get("part_number")
+            if part:
+                if part not in mapping_data_dict:
+                    mapping_data_dict[part] = {
+                        "customer_items": [],
+                        "old_stock": None,
+                        "uploaded_reorder_point": None,
+                        "uploaded_at": None
+                    }
+                
+                # Collect customer items
+                if sheet_row.get("customer_item"):
+                    for cust_item in sheet_row["customer_item"]:
+                        if cust_item and cust_item not in mapping_data_dict[part]["customer_items"]:
+                            mapping_data_dict[part]["customer_items"].append(cust_item)
+                
+                # Use most recent values
+                if sheet_row.get("old_stock") is not None:
+                    mapping_data_dict[part]["old_stock"] = sheet_row["old_stock"]
+                if sheet_row.get("reorder_point") is not None:
+                    mapping_data_dict[part]["uploaded_reorder_point"] = sheet_row["reorder_point"]
+                if sheet_row.get("uploaded_at"):
+                    mapping_data_dict[part]["uploaded_at"] = sheet_row["uploaded_at"]
+        
+        # Merge mapping data into stock levels
+        for item in items:
+            part_num = item.get("part_number")
+            if part_num in mapping_data_dict:
+                mapping = mapping_data_dict[part_num]
+                
+                item["old_stock"] = mapping["old_stock"]
+                item["customer_items_array"] = mapping["customer_items"]
+                
+                if mapping["uploaded_reorder_point"] is not None:
+                    item["uploaded_reorder_point"] = mapping["uploaded_reorder_point"]
+                
+                item["has_uploaded_data"] = True
+                item["uploaded_at"] = mapping["uploaded_at"]
         
         return {
             "success": True,
@@ -140,7 +204,7 @@ async def get_stock_summary(
         total_stock_value = sum(item.get("total_value", 0) or 0 for item in items)
         low_stock_count = sum(
             1 for item in items 
-            if 0 < item.get("current_stock", 0) < item.get("reorder_point", 3)
+            if 0 < item.get("current_stock", 0) < item.get("reorder_point", DEFAULT_REORDER_POINT)
         )
         out_of_stock_count = sum(
             1 for item in items 
@@ -386,46 +450,67 @@ def recalculate_stock_for_user(username: str):
     mapping_data = mappings.data or []
     logger.info(f"Found {len(mapping_data)} inventory mappings")
     
+    # 4. GET EXISTING STOCK LEVELS TO PRESERVE MANUAL EDITS
+    existing_stock_levels = db.client.table("stock_levels")\
+        .select("part_number, internal_item_name, reorder_point, old_stock")\
+        .eq("username", username)\
+        .execute()
+    
+    # Build lookup dict: (part_number, internal_item_name) -> {reorder_point, old_stock}
+    existing_values = {}
+    for stock in (existing_stock_levels.data or []):
+        key = (stock.get("part_number"), stock.get("internal_item_name"))
+        existing_values[key] = {
+            "reorder_point": stock.get("reorder_point"),
+            "old_stock": stock.get("old_stock")
+        }
+    
+    logger.info(f"Found {len(existing_values)} existing stock levels to preserve")
+    
     # Create mapping lookup (use default reorder point of 3)
     customer_to_vendor = {}
     for mapping in mapping_data:
-        customer_item = mapping.get("customer_item")
-        vendor_part = mapping.get("vendor_part_number")
+        customer_item = mapping.get("customer_item_name") # Corrected from 'customer_item'
+        vendor_part = mapping.get("part_number") # Corrected from 'vendor_part_number'
         if customer_item and vendor_part:
             customer_to_vendor[customer_item] = vendor_part
+    
     
     # 4. Group vendor items by part number
     stock_by_part = {}
     
     for item in vendor_data:
-        part_num = item.get("part_number")
-        if not part_num:
+        part_number = item.get("part_number", "")
+        internal_item_name = item.get("description", "")
+        
+        if not part_number:
             continue
         
-        # Normalize for grouping
-        normalized_part = normalize_part_number(part_num)
+        # Normalize for grouping (original logic)
+        normalized_part = normalize_part_number(part_number)
         
-        # Find existing group with fuzzy match
+        # Find existing group with fuzzy match (original logic)
         matched_group = None
         for existing_part in stock_by_part.keys():
-            if fuzzy_match_part_numbers(part_num, existing_part, threshold=90):
+            if fuzzy_match_part_numbers(part_number, existing_part, threshold=90):
                 matched_group = existing_part
                 break
         
-        group_key = matched_group or part_num
+        group_key = matched_group or part_number  # Fixed: was part_num, should be part_number
         
         if group_key not in stock_by_part:
             stock_by_part[group_key] = {
                 "part_number": group_key,
-                "internal_item_name": item.get("description", ""),
-                "vendor_description": item.get("description", ""),
-                "total_in": 0,
-                "total_out": 0,
-                "vendor_rate": item.get("rate"),
+                "internal_item_name": internal_item_name,
+                "vendor_description": internal_item_name,
+                "total_in": 0.0,
+                "total_out": 0.0,
+                "customer_items": [],  # Changed from set() to list
+                "vendor_rate": item.get("rate"),  # Get rate from first vendor invoice
                 "customer_rate": None,
                 "last_vendor_invoice_date": item.get("invoice_date"),
                 "last_customer_invoice_date": None,
-                "reorder_point": 3  # Default reorder point
+                "reorder_point": DEFAULT_REORDER_POINT  # Always use default
             }
         
         stock_by_part[group_key]["total_in"] += float(item.get("qty", 0) or 0)
@@ -511,6 +596,14 @@ def recalculate_stock_for_user(username: str):
         # Create a comma-separated string of customer items (or None if no mappings)
         customer_items_str = ", ".join(data.get("customer_items", [])) if data.get("customer_items") else None
         
+        # Check if this item has existing manual edits to preserve
+        lookup_key = (part, data["internal_item_name"])
+        preserved = existing_values.get(lookup_key, {})
+        
+        # Use preserved values if they exist, otherwise use defaults
+        reorder_point = preserved.get("reorder_point") if preserved.get("reorder_point") is not None else data["reorder_point"]
+        old_stock = preserved.get("old_stock") if preserved.get("old_stock") is not None else None
+        
         stock_records.append({
             "username": username,
             "part_number": part,
@@ -520,7 +613,8 @@ def recalculate_stock_for_user(username: str):
             "current_stock": round(current_stock, 2),
             "total_in": round(data["total_in"], 2),
             "total_out": round(data["total_out"], 2),
-            "reorder_point": data["reorder_point"],
+            "reorder_point": reorder_point,  # PRESERVED from existing or default
+            "old_stock": old_stock,  # PRESERVED from existing
             "vendor_rate": data.get("vendor_rate"),
             "customer_rate": data.get("customer_rate"),
             "unit_value": unit_value,
@@ -569,6 +663,11 @@ async def update_stock_level(
                 raise HTTPException(status_code=400, detail="Unit value must be >= 0")
             update_data["unit_value"] = updates.unit_value
             update_data["vendor_rate"] = updates.unit_value  # Sync with vendor_rate
+        
+        if updates.old_stock is not None:
+            if updates.old_stock < 0:
+                raise HTTPException(status_code=400, detail="Old stock must be >= 0")
+            update_data["old_stock"] = updates.old_stock
         
         if not update_data:
             raise HTTPException(status_code=400, detail="No valid fields to update")
@@ -687,4 +786,198 @@ async def adjust_stock(
         raise
     except Exception as e:
         logger.error(f"Error adjusting stock: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/export-unmapped-pdf")
+async def export_unmapped_stock_pdf(
+    search: Optional[str] = Query(None),
+    status_filter: Optional[str] = Query(None),
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Export only unmapped stock items (where customer_items is NULL or empty) to PDF.
+    Uses same format asexisting vendor invoice PDFs.
+    """
+    username = current_user.get("username")
+    db = get_database_client()
+    
+    try:
+        # Get all stock levels with optional search filter
+        query = db.client.table("stock_levels")\
+            .select("*")\
+            .eq("username", username)
+        
+        # Apply search filter if provided
+        if search:
+            query = query.or_(
+                f"internal_item_name.ilike.%{search}%,"
+                f"part_number.ilike.%{search}%,"
+                f"vendor_description.ilike.%{search}%"
+            )
+        
+        query = query.order("part_number")
+        response = query.execute()
+        
+        items = response.data or []
+        
+        # Filter to only unmapped items (customer_items is NULL or empty)
+        unmapped_items = [
+            item for item in items 
+            if not item.get("customer_items") or item.get("customer_items").strip() == ""
+        ]
+        
+        # Apply status filter if provided
+        if status_filter and status_filter != "all":
+            if status_filter == "out_of_stock":
+                unmapped_items = [item for item in unmapped_items if item.get("current_stock", 0) <= 0]
+            elif status_filter == "low_stock":
+                unmapped_items = [item for item in unmapped_items if 0 < item.get("current_stock", 0) < item.get("reorder_point", DEFAULT_REORDER_POINT)]
+            elif status_filter == "in_stock":
+                unmapped_items = [item for item in unmapped_items if item.get("current_stock", 0) >= item.get("reorder_point", DEFAULT_REORDER_POINT)]
+        
+        if not unmapped_items:
+            raise HTTPException(
+                status_code=404, 
+                detail="No unmapped items found matching the filters"
+            )
+        
+        # Create PDF in memory - PORTRAIT orientation with proper spacing
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(
+            buffer,
+            pagesize=letter,  # Portrait letter (8.5" x 11")
+            rightMargin=20,
+            leftMargin=20,
+            topMargin=30,
+            bottomMargin=30
+        )
+        
+        # Container for PDF elements
+        elements = []
+        
+        # Styles
+        styles = getSampleStyleSheet()
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontSize=18,
+            textColor=colors.HexColor('#1f2937'),
+            spaceAfter=20,
+            alignment=TA_CENTER
+        )
+        
+        
+        # Title
+        title = Paragraph("<b>Vendor Mapping Sheet</b>", title_style)
+        elements.append(title)
+        
+        # Date and instructions
+        date_text = f"Generated: {datetime.now().strftime('%m/%d/%Y')}"
+        date = Paragraph(date_text, styles['Normal'])
+        elements.append(date)
+        
+        instructions = Paragraph("Fill in Customer Item, Stock, and Reorder columns by hand", styles['Normal'])
+        elements.append(instructions)
+        elements.append(Spacer(1, 0.3*inch))
+        
+        # Table data
+        table_data = [[
+            'Part Number',
+            'Internal Item Name',
+            'Stock On Hand',
+            'Reorder Point',
+            'Unit Value',
+            'Total Value',
+            'Status'
+        ]]
+        
+        # Add data rows
+        for item in unmapped_items:
+            stock = item.get("current_stock", 0)
+            reorder = item.get("reorder_point", 3)
+            
+            # Calculate status
+            if stock <= 0:
+                status = "Out"
+            elif stock < reorder:
+                status = "Low"
+        table_data = [
+            ['#', 'Vendor Description', 'Part Number', 'Customer Item', 'Stock', 'Reorder']
+        ]
+
+        for idx, item in enumerate(unmapped_items, 1):
+            table_data.append([
+                str(idx),
+                item.get('internal_item_name', ''),
+                item.get('part_number', ''),
+                '',  # Customer Item - BLANK for manual entry
+                '',  # Stock - BLANK for manual entry
+                ''   # Reorder - BLANK for manual entry
+            ])
+
+        # Create table with optimized column widths for PORTRAIT orientation
+        # Total width: ~7.5" (letter width 8.5" - 1" margins)
+        # Widths: # (0.3"), Vendor Desc (2.5" with wrap), Part# (1.3"), Customer (2.2"), Stock (0.6"), Reorder (0.6")
+        from reportlab.platypus import Paragraph as PDFParagraph
+        from reportlab.lib.styles import getSampleStyleSheet as getStyles
+        
+        # Wrap long vendor descriptions
+        cell_style = getStyles()['Normal']
+        cell_style.fontSize = 9
+        cell_style.leading = 10
+        
+        wrapped_data = [table_data[0]]  # Header row
+        for row in table_data[1:]:
+            wrapped_row = [
+                row[0],  # # - plain text
+                PDFParagraph(row[1], cell_style),  # Vendor Description - wrapped
+                row[2],  # Part Number - plain text
+                row[3],  # Customer Item - blank
+                row[4],  # Stock - blank
+                row[5]   # Reorder - blank
+            ]
+            wrapped_data.append(wrapped_row)
+        
+        table = Table(wrapped_data, colWidths=[0.3*inch, 2.5*inch, 1.3*inch, 2.2*inch, 0.6*inch, 0.6*inch])
+        table.setStyle(TableStyle([
+            # Header styling
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3b82f6')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 9),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
+            ('TOPPADDING', (0, 0), (-1, 0), 8),
+            
+            # Data rows styling
+            ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+            ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
+            ('ALIGN', (0, 1), (0, -1), 'CENTER'),  # # column centered
+            ('ALIGN', (1, 1), (1, -1), 'LEFT'),    # Vendor Desc left-aligned
+            ('ALIGN', (2, 1), (-1, -1), 'LEFT'),    # Other columns left-aligned
+            ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+            ('FONTSIZE', (0, 1), (-1, -1), 8),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),  # Black grid lines
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),  # Top alignment for wrapped text
+            ('LEFTPADDING', (0, 0), (-1, -1), 4),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+            ('TOPPADDING', (0, 1), (-1, -1), 6),
+            ('BOTTOMPADDING', (0, 1), (-1, -1), 6),
+        ]))
+
+        elements.append(table)
+        doc.build(elements)
+
+        buffer.seek(0)
+        return Response(
+            content=buffer.getvalue(),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f"attachment; filename=unmapped_stock_{datetime.now().strftime('%Y%m%d')}.pdf"
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"Error generating unmapped stock PDF: {e}")
         raise HTTPException(status_code=500, detail=str(e))

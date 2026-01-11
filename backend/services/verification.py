@@ -201,7 +201,9 @@ def build_verified(df_raw: pd.DataFrame, df_date: pd.DataFrame, df_amount: pd.Da
     # NEW: Exclude any records with Receipt Numbers that are Pending in ANY sheet
     if pending_receipts_all:
         before_exclude = len(base_df)
-        base_df = base_df[~base_df["Receipt Number_str"].isin(pending_receipts_all)].copy()
+        # Use the actual column name as it appears in base_df
+        receipt_col = 'Receipt Number' if 'Receipt Number' in base_df.columns else 'receipt_number'
+        base_df = base_df[~base_df[receipt_col].astype(str).isin(pending_receipts_all)].copy()
         logger.info(f"📊 After excluding pending receipts: {len(base_df)} records (removed {before_exclude - len(base_df)})")
     
     # Exclude rejected and already verified
@@ -377,7 +379,7 @@ def build_verified(df_raw: pd.DataFrame, df_date: pd.DataFrame, df_amount: pd.Da
                 amt_merge.rename(columns={rowid_col_amount: rowid_col_raw}), 
                 on=rowid_col_raw, 
                 how="left", 
-                suffixes=(None, '_verified'),
+                suffixes=('', '_verified'),  # FIX: Use empty string instead of None to prevent duplicates
                 validate="m:1"
             )
             
@@ -911,6 +913,24 @@ async def run_sync_verified_logic_supabase(username: str, progress_callback=None
             if col in final_df_snake.columns:
                 final_df_snake = final_df_snake.drop(columns=[col])
         
+        # CRITICAL FIX: Remove duplicate column names before converting to dict
+        # Pandas silently omits duplicate columns when calling to_dict(), causing data loss
+        if final_df_snake.columns.duplicated().any():
+            duplicate_cols = final_df_snake.columns[final_df_snake.columns.duplicated()].tolist()
+            logger.warning(f"⚠️ Found duplicate column names: {duplicate_cols}. Removing duplicates...")
+            final_df_snake = final_df_snake.loc[:, ~final_df_snake.columns.duplicated(keep='last')]
+            logger.info(f"✓ Removed duplicate columns. Final columns: {len(final_df_snake.columns)}")
+        
+        # CRITICAL FIX: Final deduplication on row_id to prevent PostgreSQL ON CONFLICT error
+        # verified_invoices has UNIQUE constraint on row_id, so we MUST ensure no duplicates
+        if 'row_id' in final_df_snake.columns:
+            initial_count = len(final_df_snake)
+            # Keep the last occurrence (most recent) for each row_id
+            final_df_snake = final_df_snake.drop_duplicates(subset=['row_id'], keep='last')
+            removed = initial_count - len(final_df_snake)
+            if removed > 0:
+                logger.warning(f"⚠️ Removed {removed} duplicate row_id values to prevent database conflict")
+        
         final_records = final_df_snake.to_dict('records')
         
         # Save to verified_invoices table
@@ -935,20 +955,33 @@ async def run_sync_verified_logic_supabase(username: str, progress_callback=None
             amount_done_receipts = set(df_amount.loc[amount_status_lower == 'done', 'Receipt Number'].astype(str).str.strip())
             amount_pending_receipts = set(df_amount.loc[amount_status_lower.isin(['pending', 'duplicate receipt number']), 'Receipt Number'].astype(str).str.strip())
         
+        # === Step 5: Clean Verification Sheets (remove 'Done' records) ===
+        # Keep only Pending and Duplicate Receipt Number records for user review
+        # Import helper function for updating verification tables
+        from database_helpers import update_verification_records
+        
         # Clean verification_dates
         if 'Verification Status' in df_date.columns:
+            # Keep Pending and Duplicate Receipt Number records
+            # CRITICAL FIX: Also keep Done records if the same receipt has pending amounts
             def should_keep_date_record(row):
                 status = str(row.get('Verification Status', '')).lower().strip()
                 receipt_num = str(row.get('Receipt Number', '')).strip()
                 
+                # Keep if Pending or Duplicate
                 if status in ['pending', 'duplicate receipt number']:
                     return True
                 
+                # If Done, check if same Receipt is still Pending in Verify Amount
                 if status == 'done':
+                    # If receipt exists in Verify Amount and is Pending there, keep in Dates
                     if receipt_num in amount_pending_receipts:
                         return True
+                    # If receipt exists in Verify Amount but is Done, can delete
+                    # If receipt doesn't exist in Verify Amount, can delete
                     return False
                 
+                # Already Verified, Rejected - can delete
                 return False
             
             df_date_clean = df_date[df_date.apply(should_keep_date_record, axis=1)].copy()
@@ -961,7 +994,6 @@ async def run_sync_verified_logic_supabase(username: str, progress_callback=None
             clean_date_records = df_date_clean_snake.to_dict('records')
             
             # Update verification_dates
-            from database_helpers import update_verification_records
             update_verification_records(username, 'verification_dates', clean_date_records)
             logger.info(f"verification_dates cleaned: {len(clean_date_records)} records remain")
 

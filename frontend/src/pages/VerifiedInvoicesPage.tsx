@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useOutletContext } from 'react-router-dom';
 import { verifiedAPI } from '../services/api';
 import { Search, Download, Loader2, ExternalLink, Trash2, Edit, Save, X } from 'lucide-react';
 
@@ -49,6 +50,9 @@ const VerifiedInvoicesPage: React.FC = () => {
 
     const queryClient = useQueryClient();
 
+    // Get context from Layout to set header actions
+    const { setHeaderActions } = useOutletContext<{ setHeaderActions: (actions: React.ReactNode) => void }>();
+
     const { isLoading, error } = useQuery({
         queryKey: ['verified', searchTerm, dateFrom, dateTo, receiptNumber, vehicleNumber, customerName, descriptionFilter],
         queryFn: async () => {
@@ -79,6 +83,23 @@ const VerifiedInvoicesPage: React.FC = () => {
         window.addEventListener('beforeunload', handleBeforeUnload);
         return () => window.removeEventListener('beforeunload', handleBeforeUnload);
     }, [hasUnsavedChanges]);
+
+    // Set header actions (Export button)
+    useEffect(() => {
+        setHeaderActions(
+            <button
+                onClick={handleExport}
+                disabled={isExporting}
+                className="flex items-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition disabled:opacity-50"
+            >
+                <Download className="mr-2" size={16} />
+                {isExporting ? 'Exporting...' : 'Export to Excel'}
+            </button>
+        );
+
+        return () => setHeaderActions(null);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isExporting]);
 
     // Individual row update mutation
     const updateRowMutation = useMutation({
@@ -270,28 +291,6 @@ const VerifiedInvoicesPage: React.FC = () => {
 
     return (
         <div className="space-y-6">
-            <div className="flex items-center justify-between">
-                <div>
-                    <h1 className="text-3xl font-bold text-gray-900">Verified Invoices</h1>
-                    <p className="text-gray-600 mt-2">
-                        View, edit, and export verified invoice data
-                        {hasUnsavedChanges && (
-                            <span className="ml-2 text-orange-600 text-sm font-medium">
-                                • Auto-saving...
-                            </span>
-                        )}
-                    </p>
-                </div>
-                <button
-                    onClick={handleExport}
-                    disabled={isExporting}
-                    className="flex items-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition disabled:opacity-50"
-                >
-                    <Download className="mr-2" size={16} />
-                    {isExporting ? 'Exporting...' : 'Export to Excel'}
-                </button>
-            </div>
-
             {/* Filters */}
             <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-4">

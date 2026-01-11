@@ -260,13 +260,6 @@ const InventoryUploadPage: React.FC = () => {
 
     return (
         <div className="max-w-4xl mx-auto space-y-6">
-            <div>
-                <h1 className="text-3xl font-bold text-gray-900">New Parts Upload & Process</h1>
-                <p className="text-gray-600 mt-2">
-                    Upload vendor invoice images for inventory processing
-                </p>
-            </div>
-
             {/* Upload Area */}
             <div
                 onDragOver={handleDragOver}

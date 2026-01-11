@@ -223,7 +223,17 @@ const ReviewDatesPage: React.FC = () => {
 
     const handleDeleteRow = async (index: number) => {
         const sortedRecord = sortedRecords[index];
-        const receiptNumber = sortedRecord['Receipt Number'];
+
+        // CRITICAL: Extract actual receipt number
+        // row_id format is "receipt_page_item" or "receipt_item", we need just the receipt part
+        const rowId = sortedRecord['row_id'] || sortedRecord['Row Id'] || sortedRecord['Row_Id'];
+        let receiptNumber = sortedRecord['Receipt Number'];
+
+        // If receipt number looks like row_id format (contains underscore), extract receipt part
+        if (receiptNumber && typeof receiptNumber === 'string' && receiptNumber.includes('_')) {
+            // row_id format: "801_0" or "801_1_0" -> extract "801"
+            receiptNumber = receiptNumber.split('_')[0];
+        }
 
         if (!receiptNumber) {
             alert('Cannot delete: No receipt number found');

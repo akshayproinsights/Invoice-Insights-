@@ -140,8 +140,11 @@ export const inventoryAPI = {
             responseType: 'blob',
         });
 
-        // Create download link
-        const url = window.URL.createObjectURL(new Blob([response.data]));
+        // Create download link with proper Excel MIME type
+        const blob = new Blob([response.data], {
+            type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        });
+        const url = window.URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = url;
         link.setAttribute('download', `inventory_export_${new Date().toISOString().split('T')[0]}.xlsx`);

@@ -30,7 +30,7 @@ const VendorMappingPage: React.FC = () => {
     const queryClient = useQueryClient();
 
     // Helper to generate unique item ID
-    const getItemId = (vendorDesc: string, partNumber: string) => `${vendorDesc}|${partNumber}`;
+    const getItemId = (vendorDesc: string, partNumber: string | null | undefined) => `${vendorDesc}|${partNumber || ''}`;
 
     // Fetch export data (unique vendor items, excluding already mapped)
     const { data: exportData, isLoading: loadingExport } = useQuery({

@@ -1,8 +1,8 @@
 import React, { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useOutletContext } from 'react-router-dom';
 import { inventoryAPI } from '../services/inventoryApi';
 import { Search, Loader2, ExternalLink, Download, Edit, Save, X, Trash2 } from 'lucide-react';
-import StatusToggle from '../components/StatusToggle';
 
 interface InventoryItem {
     id: number;
@@ -26,6 +26,9 @@ interface ValidationError {
 }
 
 const VerifyPartsPage: React.FC = () => {
+    // Get context from Layout to set header actions
+    const { setHeaderActions } = useOutletContext<{ setHeaderActions: (actions: React.ReactNode) => void }>();
+
     // Filter states
     const [searchTerm, setSearchTerm] = useState('');
     const [dateFrom, setDateFrom] = useState('');
@@ -71,6 +74,23 @@ const VerifyPartsPage: React.FC = () => {
         window.addEventListener('beforeunload', handleBeforeUnload);
         return () => window.removeEventListener('beforeunload', handleBeforeUnload);
     }, [hasUnsavedChanges]);
+
+    // Set header actions (Export button)
+    React.useEffect(() => {
+        setHeaderActions(
+            <button
+                onClick={handleExport}
+                disabled={isExporting}
+                className="flex items-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition disabled:opacity-50"
+            >
+                <Download className="mr-2" size={16} />
+                {isExporting ? 'Exporting...' : 'Export to Excel'}
+            </button>
+        );
+
+        return () => setHeaderActions(null);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isExporting]);
 
     // Update item mutation
     const updateItemMutation = useMutation({
@@ -326,13 +346,6 @@ const VerifyPartsPage: React.FC = () => {
         setStatusFilter('');
     };
 
-    const handleStatusChange = (item: InventoryItem, newStatus: string) => {
-        if (item.amount_mismatch === 0 && newStatus !== 'Done') {
-            return;
-        }
-        updateStatusMutation.mutate({ id: item.id, status: newStatus });
-    };
-
     const handleDelete = (item: InventoryItem) => {
         if (confirm(`Are you sure you want to delete this item: ${item.part_number || item.description}?`)) {
             deleteItemMutation.mutate(item.id);
@@ -363,23 +376,6 @@ const VerifyPartsPage: React.FC = () => {
 
     return (
         <div className="space-y-6">
-            <div className="flex items-center justify-between">
-                <div>
-                    <h1 className="text-3xl font-bold text-gray-900">Verified Vendor Invoices</h1>
-                    <p className="text-gray-600 mt-2">
-                        Review all verified vendor invoice data
-                    </p>
-                </div>
-                <button
-                    onClick={handleExport}
-                    disabled={isExporting}
-                    className="flex items-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition disabled:opacity-50"
-                >
-                    <Download className="mr-2" size={16} />
-                    {isExporting ? 'Exporting...' : 'Export to Excel'}
-                </button>
-            </div>
-
             {/* Filters */}
             <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
@@ -491,13 +487,15 @@ const VerifyPartsPage: React.FC = () => {
                             <thead className="bg-gray-50 border-b border-gray-200">
                                 <tr>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Invoice Date</th>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Invoice Number</th>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Part Number</th>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Description</th>
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">HNS</th>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Qty</th>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Rate</th>
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">CGST</th>
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">SGST</th>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Net Bill</th>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Upload Date</th>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Image</th>
@@ -508,7 +506,6 @@ const VerifyPartsPage: React.FC = () => {
                                 {filteredItems.map((item) => {
                                     const isEditing = editingId === item.id;
                                     const currentItem = isEditing && editedItem ? editedItem : item;
-                                    const displayStatus = item.amount_mismatch === 0 ? 'Done' : (item.verification_status || 'Pending');
 
                                     return (
                                         <tr key={item.id} className="hover:bg-gray-50">
@@ -540,15 +537,7 @@ const VerifyPartsPage: React.FC = () => {
                                                         <Edit size={18} />
                                                     </button>
                                                 )}
-                                            </td>
 
-                                            {/* Status */}
-                                            <td className="px-4 py-3">
-                                                <StatusToggle
-                                                    status={displayStatus}
-                                                    onChange={(newStatus) => handleStatusChange(item, newStatus)}
-                                                    disabled={item.amount_mismatch === 0}
-                                                />
                                             </td>
 
                                             {/* Invoice Date */}
@@ -609,6 +598,20 @@ const VerifyPartsPage: React.FC = () => {
                                                 )}
                                             </td>
 
+                                            {/* HSN */}
+                                            <td className="px-4 py-3 text-sm">
+                                                {isEditing ? (
+                                                    <input
+                                                        type="text"
+                                                        value={currentItem.hsn || ''}
+                                                        onChange={(e) => handleFieldChange('hsn', e.target.value)}
+                                                        className="w-20 px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                                                    />
+                                                ) : (
+                                                    <span className="text-gray-900">{item.hsn || '—'}</span>
+                                                )}
+                                            </td>
+
                                             {/* Qty */}
                                             <td className="px-4 py-3 text-sm">
                                                 {isEditing ? (
@@ -647,6 +650,36 @@ const VerifyPartsPage: React.FC = () => {
                                                     </div>
                                                 ) : (
                                                     <span className="text-gray-900">₹{item.rate?.toFixed(2) || '0.00'}</span>
+                                                )}
+                                            </td>
+
+                                            {/* CGST */}
+                                            <td className="px-4 py-3 text-sm">
+                                                {isEditing ? (
+                                                    <input
+                                                        type="number"
+                                                        step="0.01"
+                                                        value={currentItem.cgst_percent || ''}
+                                                        onChange={(e) => handleFieldChange('cgst_percent', e.target.value)}
+                                                        className="w-20 px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                                                    />
+                                                ) : (
+                                                    <span className="text-gray-900">{item.cgst_percent ? `${item.cgst_percent}%` : '—'}</span>
+                                                )}
+                                            </td>
+
+                                            {/* SGST */}
+                                            <td className="px-4 py-3 text-sm">
+                                                {isEditing ? (
+                                                    <input
+                                                        type="number"
+                                                        step="0.01"
+                                                        value={currentItem.sgst_percent || ''}
+                                                        onChange={(e) => handleFieldChange('sgst_percent', e.target.value)}
+                                                        className="w-20 px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                                                    />
+                                                ) : (
+                                                    <span className="text-gray-900">{item.sgst_percent ? `${item.sgst_percent}%` : '—'}</span>
                                                 )}
                                             </td>
 

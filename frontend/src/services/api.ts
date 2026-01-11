@@ -144,6 +144,11 @@ export const reviewAPI = {
         return response.data;
     },
 
+    deleteRecord: async (rowId: string) => {
+        const response = await apiClient.delete(`/api/review/record/${rowId}`);
+        return response.data;
+    },
+
     syncAndFinish: async () => {
         const response = await apiClient.post('/api/review/sync-finish');
         return response.data;
@@ -259,8 +264,11 @@ export const verifiedAPI = {
             responseType: 'blob',
         });
 
-        // Create download link
-        const url = window.URL.createObjectURL(new Blob([response.data]));
+        // Create download link with proper Excel MIME type
+        const blob = new Blob([response.data], {
+            type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        });
+        const url = window.URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = url;
         link.setAttribute('download', `verified_invoices_${new Date().toISOString().split('T')[0]}.xlsx`);
@@ -283,5 +291,52 @@ export const configAPI = {
     getColumns: async () => {
         const response = await apiClient.get('/api/config/columns');
         return response.data;
+    },
+};
+
+// Mapping Sheet Upload
+export interface MappingSheetUploadResponse {
+    sheet_id: string;
+    image_url: string;
+    status: string;
+    message: string;
+    extracted_rows?: number;
+}
+
+export interface VendorMappingSheet {
+    id: string;
+    username: string;
+    image_url: string;
+    image_hash: string;
+    part_number?: string;
+    vendor_description?: string;
+    customer_item?: string[];
+    old_stock?: number;
+    reorder_point?: number;
+    uploaded_at: string;
+    processed_at?: string;
+    status: string;
+}
+
+export const mappingSheetAPI = {
+    upload: async (file: File): Promise<MappingSheetUploadResponse> => {
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const response = await apiClient.post('/api/stock/mapping-sheets/upload', formData, {
+            headers: {
+                'Content-Type': 'multipart/form-data',
+            },
+        });
+        return response.data;
+    },
+
+    getAll: async (): Promise<VendorMappingSheet[]> => {
+        const response = await apiClient.get('/api/stock/mapping-sheets/sheets');
+        return response.data;
+    },
+
+    delete: async (sheetId: string): Promise<void> => {
+        await apiClient.delete(`/api/stock/mapping-sheets/sheets/${sheetId}`);
     },
 };

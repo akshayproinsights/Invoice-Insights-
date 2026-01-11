@@ -87,24 +87,19 @@ const DashboardPage: React.FC = () => {
         {
             label: 'This Month',
             value: isLoading ? '—' : (statsData?.this_month || 0).toString(),
-            icon: TrendingUp,
+            // Use neutral icon when value is 0, otherwise show growth icon
+            icon: (statsData?.this_month || 0) === 0 ? FileText : TrendingUp,
             color: 'bg-purple-50 text-purple-600',
         },
     ];
 
     return (
         <div className="space-y-6">
-            <div>
-                <h1 className="text-3xl font-bold text-gray-900">Overview</h1>
-                <p className="text-gray-600 mt-2">
-                    Track your invoice processing workflow and analytics
-                </p>
-                {isError && (
-                    <div className="mt-2 p-3 bg-red-50 border border-red-200 rounded-lg">
-                        <p className="text-sm text-red-700">Failed to load statistics. Please refresh the page.</p>
-                    </div>
-                )}
-            </div>
+            {isError && (
+                <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
+                    <p className="text-sm text-red-700">Failed to load statistics. Please refresh the page.</p>
+                </div>
+            )}
 
             {/* Stats Grid */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
@@ -113,7 +108,7 @@ const DashboardPage: React.FC = () => {
                     return (
                         <div
                             key={stat.label}
-                            className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 hover:shadow-md transition"
+                            className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 hover:shadow-lg hover:-translate-y-1 transition-all duration-200 cursor-pointer"
                         >
                             <div className="flex items-center justify-between">
                                 <div>
@@ -213,35 +208,6 @@ const DashboardPage: React.FC = () => {
                     onClick={() => setIsFullscreen(false)}
                 />
             )}
-
-            {/* Quick Actions */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div className="bg-gradient-to-br from-blue-500 to-blue-600 rounded-xl shadow-lg p-6 text-white">
-                    <h3 className="text-xl font-semibold mb-2">Upload New Invoices</h3>
-                    <p className="text-blue-100 mb-4">
-                        Process new invoices with automated data extraction
-                    </p>
-                    <a
-                        href="/upload"
-                        className="inline-block bg-white text-blue-600 px-4 py-2 rounded-lg font-medium hover:bg-blue-50 transition"
-                    >
-                        Go to Upload
-                    </a>
-                </div>
-
-                <div className="bg-gradient-to-br from-green-500 to-green-600 rounded-xl shadow-lg p-6 text-white">
-                    <h3 className="text-xl font-semibold mb-2">Review & Verify</h3>
-                    <p className="text-green-100 mb-4">
-                        Review extracted data and verify accuracy
-                    </p>
-                    <a
-                        href="/review/dates"
-                        className="inline-block bg-white text-green-600 px-4 py-2 rounded-lg font-medium hover:bg-green-50 transition"
-                    >
-                        Start Review
-                    </a>
-                </div>
-            </div>
         </div>
     );
 };

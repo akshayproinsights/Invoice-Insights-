@@ -436,3 +436,60 @@ async def export_verified_invoices(
         logger.error(f"Error exporting verified invoices to Excel: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to export verified invoices: {str(e)}")
 
+
+@router.get("/unique-customer-items")
+async def get_unique_customer_items(
+    search: Optional[str] = Query(None, description="Search filter for customer items"),
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Get unique customer item descriptions from verified_invoices.
+    Used for dropdown suggestions in stock register mapping.
+    """
+    username = current_user.get("username")
+    
+    if not username:
+        raise HTTPException(status_code=400, detail="No username in token")
+    
+    try:
+        db = get_database_client()
+        
+        # Get all verified invoices for this user
+        response = db.client.table("verified_invoices")\
+            .select("description")\
+            .eq("username", username)\
+            .eq("type", "Part")\
+            .execute()
+        
+        items = response.data or []
+        
+        # Extract unique descriptions
+        unique_descriptions = set()
+        for item in items:
+            desc = item.get("description")
+            if desc and desc.strip():
+                unique_descriptions.add(desc.strip())
+        
+        # Convert to sorted list
+        customer_items = sorted(list(unique_descriptions))
+        
+        # Apply search filter if provided
+        if search and search.strip():
+            search_lower = search.strip().lower()
+            customer_items = [
+                item for item in customer_items 
+                if search_lower in item.lower()
+            ]
+        
+        logger.info(f"Found {len(customer_items)} unique customer items for {username}")
+        
+        return {
+            "success": True,
+            "customer_items": customer_items,
+            "count": len(customer_items)
+        }
+    
+    except Exception as e:
+        logger.error(f"Error getting unique customer items: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+

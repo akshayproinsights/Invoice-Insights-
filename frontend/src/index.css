@@ -37,4 +37,64 @@ body {
   .text-balance {
     text-wrap: balance;
   }
+  
+  /* Toast animations */
+  @keyframes slide-in {
+    from {
+      transform: translateX(100%);
+      opacity: 0;
+    }
+    to {
+      transform: translateX(0);
+      opacity: 1;
+    }
+  }
+  
+  .animate-slide-in {
+    animation: slide-in 0.3s ease-out;
+  }
+  
+  .animate-fade-in {
+    animation: fade-in 0.3s ease-out;
+  }
+  
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  
+  /* Inline editing state borders */
+  .border-editing {
+    border-color: #FCD34D !important; /* Yellow */
+    box-shadow: 0 0 0 1px #FCD34D;
+  }
+  
+  .border-saving {
+    border-color: #60A5FA !important; /* Blue */
+    box-shadow: 0 0 0 1px #60A5FA;
+  }
+  
+  .border-saved {
+    border-color: #34D399 !important; /* Green */
+    box-shadow: 0 0 0 1px #34D399;
+    animation: pulse-green 0.5s ease-out;
+  }
+  
+  .border-error {
+    border-color: #F87171 !important; /* Red */
+    box-shadow: 0 0 0 1px #F87171;
+  }
+  
+  @keyframes pulse-green {
+    0%, 100% {
+      box-shadow: 0 0 0 1px #34D399;
+    }
+    50% {
+      box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.3);
+    }
+  }
 }
