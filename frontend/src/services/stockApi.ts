@@ -25,6 +25,7 @@ export interface StockLevel {
     old_stock?: number;  // From uploaded mapping sheet
     has_uploaded_data?: boolean;  // Flag for highlighting
     uploaded_at?: string;  // Timestamp of upload
+    priority?: string;
 }
 
 export interface StockSummary {
@@ -45,6 +46,7 @@ export interface StockUpdate {
     reorder_point?: number;
     unit_value?: number;
     old_stock?: number;
+    priority?: string;
 }
 
 export interface StockTransaction {

@@ -199,7 +199,7 @@ const CurrentStockPage: React.FC = () => {
     // === Simple Edit Pattern - Always Editable with Cell Locking ===
     const [savingFields, setSavingFields] = useState<{ [key: string]: boolean }>({});
 
-    const handleFieldUpdate = async (id: number, field: 'reorder_point' | 'old_stock', value: number) => {
+    const handleFieldUpdate = async (id: number, field: 'reorder_point' | 'old_stock' | 'priority', value: number | string) => {
         const fieldKey = `${id}-${field}`;
 
         // Update local state immediately
@@ -212,6 +212,7 @@ const CurrentStockPage: React.FC = () => {
 
         try {
             const updates = { [field]: value };
+            // @ts-ignore
             await updateStockLevel(id, updates);
         } catch (error) {
             console.error('Error updating stock level:', error);
@@ -578,6 +579,9 @@ const CurrentStockPage: React.FC = () => {
                                         Customer Item
                                     </th>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">
+                                        Priority
+                                    </th>
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">
                                         Status
                                     </th>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">
@@ -712,6 +716,20 @@ const CurrentStockPage: React.FC = () => {
                                                         )}
                                                     </div>
                                                 </div>
+                                            </td>
+                                            <td className="px-4 py-3 text-sm">
+                                                <select
+                                                    value={item.priority || ''}
+                                                    onChange={(e) => handleFieldUpdate(item.id, 'priority', e.target.value)}
+                                                    disabled={savingFields[`${item.id}-priority`]}
+                                                    className="w-20 px-2 py-1 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-wait"
+                                                >
+                                                    <option value="">-</option>
+                                                    <option value="P0">P0</option>
+                                                    <option value="P1">P1</option>
+                                                    <option value="P2">P2</option>
+                                                    <option value="P3">P3</option>
+                                                </select>
                                             </td>
                                             <td className="px-4 py-3 text-sm min-w-[140px]">
                                                 {getStatusBadge(item.status || 'In Stock')}

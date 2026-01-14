@@ -44,6 +44,7 @@ class StockUpdateRequest(BaseModel):
     reorder_point: Optional[float] = None
     unit_value: Optional[float] = None
     old_stock: Optional[float] = None
+    priority: Optional[str] = None
 
 
 def normalize_part_number(part_number: str) -> str:
@@ -603,6 +604,7 @@ def recalculate_stock_for_user(username: str):
         # Use preserved values if they exist, otherwise use defaults
         reorder_point = preserved.get("reorder_point") if preserved.get("reorder_point") is not None else data["reorder_point"]
         old_stock = preserved.get("old_stock") if preserved.get("old_stock") is not None else None
+        priority = preserved.get("priority")
         
         stock_records.append({
             "username": username,
@@ -615,6 +617,7 @@ def recalculate_stock_for_user(username: str):
             "total_out": round(data["total_out"], 2),
             "reorder_point": reorder_point,  # PRESERVED from existing or default
             "old_stock": old_stock,  # PRESERVED from existing
+            "priority": priority, # PRESERVED
             "vendor_rate": data.get("vendor_rate"),
             "customer_rate": data.get("customer_rate"),
             "unit_value": unit_value,
@@ -668,6 +671,9 @@ async def update_stock_level(
             if updates.old_stock < 0:
                 raise HTTPException(status_code=400, detail="Old stock must be >= 0")
             update_data["old_stock"] = updates.old_stock
+        
+        if updates.priority is not None:
+            update_data["priority"] = updates.priority
         
         if not update_data:
             raise HTTPException(status_code=400, detail="No valid fields to update")
@@ -882,28 +888,8 @@ async def export_unmapped_stock_pdf(
         elements.append(Spacer(1, 0.3*inch))
         
         # Table data
-        table_data = [[
-            'Part Number',
-            'Internal Item Name',
-            'Stock On Hand',
-            'Reorder Point',
-            'Unit Value',
-            'Total Value',
-            'Status'
-        ]]
-        
-        # Add data rows
-        for item in unmapped_items:
-            stock = item.get("current_stock", 0)
-            reorder = item.get("reorder_point", 3)
-            
-            # Calculate status
-            if stock <= 0:
-                status = "Out"
-            elif stock < reorder:
-                status = "Low"
         table_data = [
-            ['#', 'Vendor Description', 'Part Number', 'Customer Item', 'Stock', 'Reorder']
+            ['#', 'Vendor Description', 'Part Number', 'Customer Item', 'Priority', 'Stock', 'Reorder']
         ]
 
         for idx, item in enumerate(unmapped_items, 1):
@@ -912,13 +898,14 @@ async def export_unmapped_stock_pdf(
                 item.get('internal_item_name', ''),
                 item.get('part_number', ''),
                 '',  # Customer Item - BLANK for manual entry
+                item.get('priority', ''),  # Priority
                 '',  # Stock - BLANK for manual entry
                 ''   # Reorder - BLANK for manual entry
             ])
 
         # Create table with optimized column widths for PORTRAIT orientation
         # Total width: ~7.5" (letter width 8.5" - 1" margins)
-        # Widths: # (0.3"), Vendor Desc (2.5" with wrap), Part# (1.3"), Customer (2.2"), Stock (0.6"), Reorder (0.6")
+        # Widths: # (0.3"), Vendor Desc (2.5"), Part# (1.0") [reduced 20%], Customer (2.2"), Priority (0.6"), Stock (0.6"), Reorder (0.6")
         from reportlab.platypus import Paragraph as PDFParagraph
         from reportlab.lib.styles import getSampleStyleSheet as getStyles
         
@@ -934,12 +921,14 @@ async def export_unmapped_stock_pdf(
                 PDFParagraph(row[1], cell_style),  # Vendor Description - wrapped
                 row[2],  # Part Number - plain text
                 row[3],  # Customer Item - blank
-                row[4],  # Stock - blank
-                row[5]   # Reorder - blank
+                row[4],  # Priority
+                row[5],  # Stock - blank
+                row[6]   # Reorder - blank
             ]
             wrapped_data.append(wrapped_row)
         
-        table = Table(wrapped_data, colWidths=[0.3*inch, 2.5*inch, 1.3*inch, 2.2*inch, 0.6*inch, 0.6*inch])
+        # Adjusted widths as requested: Part Number reduced, Priority added (similar width to Stock)
+        table = Table(wrapped_data, colWidths=[0.3*inch, 2.5*inch, 1.05*inch, 2.2*inch, 0.6*inch, 0.6*inch, 0.6*inch])
         table.setStyle(TableStyle([
             # Header styling
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3b82f6')),
