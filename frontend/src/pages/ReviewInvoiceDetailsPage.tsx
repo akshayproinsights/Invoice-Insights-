@@ -18,10 +18,12 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
     const queryClient = useQueryClient();
 
     const saveTimeoutRef = React.useRef<number | null>(null);
+    const refetchDelayRef = React.useRef<number | null>(null); // Delay refetch to avoid interrupting user
 
     // Track field states: 'idle' | 'editing' | 'saving' | 'saved' | 'error'
     // Map structure: rowId -> fieldName -> state
     const [fieldStates, setFieldStates] = useState<{ [key: string]: { [key: string]: string } }>({});
+
 
     // Helper function to get border color based on field state
     const getFieldBorderClass = (rowId: string, fieldName: string, hasError: boolean = false) => {
@@ -55,6 +57,21 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
             }
         }));
     };
+
+    // Schedule a delayed refetch to avoid interrupting user input
+    const scheduleDelayedRefetch = () => {
+        // Clear any existing delayed refetch
+        if (refetchDelayRef.current) {
+            clearTimeout(refetchDelayRef.current);
+        }
+
+        // Schedule refetch after 3 seconds of no activity
+        refetchDelayRef.current = window.setTimeout(() => {
+            queryClient.invalidateQueries({ queryKey: ['review-invoice-details'] });
+            refetchDelayRef.current = null;
+        }, 3000);
+    };
+
 
     // Fetch combined data (dates + amounts)
     const { isLoading, error } = useQuery({
@@ -167,7 +184,9 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
         mutationFn: async ({ record }: { record: any }) => {
             return reviewAPI.updateSingleDate(record);
         },
-        onSuccess: () => { },
+        onSuccess: () => {
+            // Query invalidation handled in inline callbacks
+        },
         onError: (error) => {
             alert(`Error updating: ${error instanceof Error ? error.message : 'Unable to update'}`);
             queryClient.invalidateQueries({ queryKey: ['review-invoice-details'] });
@@ -178,7 +197,9 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
         mutationFn: async ({ record }: { record: any }) => {
             return reviewAPI.updateSingleAmount(record);
         },
-        onSuccess: () => { },
+        onSuccess: () => {
+            // Query invalidation handled in inline callbacks
+        },
         onError: (error) => {
             alert(`Error updating: ${error instanceof Error ? error.message : 'Unable to update'}`);
             queryClient.invalidateQueries({ queryKey: ['review-invoice-details'] });
@@ -226,6 +247,8 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
                         updateFieldState(rowId, field, 'saved');
                         // Reset to idle after 2 seconds
                         setTimeout(() => updateFieldState(rowId, field, 'idle'), 2000);
+                        // Schedule delayed refetch (3 seconds) to avoid interrupting user
+                        scheduleDelayedRefetch();
                     },
                     onError: () => {
                         updateFieldState(rowId, field, 'error');
@@ -237,13 +260,57 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
                         updateFieldState(rowId, field, 'saved');
                         // Reset to idle after 2 seconds
                         setTimeout(() => updateFieldState(rowId, field, 'idle'), 2000);
+                        // Schedule delayed refetch (3 seconds) to avoid interrupting user
+                        scheduleDelayedRefetch();
                     },
                     onError: () => {
                         updateFieldState(rowId, field, 'error');
                     }
                 });
             }
-        }, 500);
+        }, 10000); // 10 seconds timeout - only saves if user stays in field
+    };
+
+    // Handle blur event - save immediately when user clicks outside
+    const handleFieldBlur = (index: number, field: string, isDateField: boolean = false) => {
+        // Clear the timeout if it exists
+        if (saveTimeoutRef.current) {
+            clearTimeout(saveTimeoutRef.current);
+            saveTimeoutRef.current = null;
+        }
+
+        const recordToSave = records[index];
+        const rowId = recordToSave['Row_Id'] || `temp-${index}`;
+
+        // Set to saving state
+        updateFieldState(rowId, field, 'saving');
+
+        // Save based on record type
+        if (isDateField) {
+            updateDateMutation.mutate({ record: recordToSave }, {
+                onSuccess: () => {
+                    updateFieldState(rowId, field, 'saved');
+                    setTimeout(() => updateFieldState(rowId, field, 'idle'), 2000);
+                    // Schedule delayed refetch (3 seconds) to avoid interrupting if user clicks back
+                    scheduleDelayedRefetch();
+                },
+                onError: () => {
+                    updateFieldState(rowId, field, 'error');
+                }
+            });
+        } else {
+            updateAmountMutation.mutate({ record: recordToSave }, {
+                onSuccess: () => {
+                    updateFieldState(rowId, field, 'saved');
+                    setTimeout(() => updateFieldState(rowId, field, 'idle'), 2000);
+                    // Schedule delayed refetch (3 seconds) to avoid interrupting if user clicks back
+                    scheduleDelayedRefetch();
+                },
+                onError: () => {
+                    updateFieldState(rowId, field, 'error');
+                }
+            });
+        }
     };
 
     const [isProcessing, setIsProcessing] = useState(false);
@@ -436,6 +503,9 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
                                     // Skip if no header for this receipt
                                     if (!headerRecord) return null;
 
+                                    // CRITICAL: Calculate global index ONCE at render time (same pattern as Line Items)
+                                    const globalIdx = records.findIndex(r => r === headerRecord);
+
                                     return (
                                         <div key={`header - ${receiptNum} `} className="p-4 border border-gray-200 rounded-lg">
                                             <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
@@ -446,13 +516,16 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
                                                         <StatusToggle
                                                             status={headerRecord['Verification Status'] || 'Pending'}
                                                             onChange={(newStatus: string) => {
-                                                                const idx = records.findIndex(r => r === headerRecord);
                                                                 // Update local state
                                                                 const updated = [...records];
-                                                                updated[idx] = { ...updated[idx], 'Verification Status': newStatus };
+                                                                updated[globalIdx] = { ...updated[globalIdx], 'Verification Status': newStatus };
                                                                 setRecords(updated);
                                                                 // CRITICAL FIX: Save immediately to database
-                                                                updateDateMutation.mutate({ record: updated[idx] });
+                                                                updateDateMutation.mutate({ record: updated[globalIdx] }, {
+                                                                    onSuccess: () => {
+                                                                        queryClient.invalidateQueries({ queryKey: ['review-invoice-details'] });
+                                                                    }
+                                                                });
                                                             }}
                                                         />
                                                         {headerRecord['Row_Id'] && (
@@ -510,14 +583,16 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
                                                     <label className="block text-sm font-medium text-gray-700 mb-1">Receipt Number</label>
                                                     <input
                                                         type="text"
-                                                        value={headerRecord['Receipt Number'] || ''}
+                                                        value={records[globalIdx]?.['Receipt Number'] || ''}
                                                         onChange={(e) => {
-                                                            const idx = records.findIndex(r => r === headerRecord);
-                                                            handleFieldChange(idx, 'Receipt Number', e.target.value, true);
+                                                            handleFieldChange(globalIdx, 'Receipt Number', e.target.value, true);
                                                         }}
-                                                        className={`border rounded px-3 py-2 w-full transition-all ${!headerRecord['Receipt Number'] || headerRecord['Receipt Number'].trim() === ''
+                                                        onBlur={() => {
+                                                            handleFieldBlur(globalIdx, 'Receipt Number', true);
+                                                        }}
+                                                        className={`border rounded px-3 py-2 w-[30%] transition-all ${!records[globalIdx]?.['Receipt Number'] || records[globalIdx]?.['Receipt Number'].trim() === ''
                                                             ? 'border-red-500 bg-red-50'
-                                                            : getFieldBorderClass(headerRecord['Row_Id'] || `temp-${records.findIndex(r => r === headerRecord)}`, 'Receipt Number')
+                                                            : getFieldBorderClass(headerRecord['Row_Id'] || `temp-${globalIdx}`, 'Receipt Number')
                                                             }`}
                                                         placeholder="e.g., 810"
                                                     />
@@ -528,12 +603,14 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
                                                     <label className="block text-sm font-medium text-gray-700 mb-1">Date</label>
                                                     <input
                                                         type="date"
-                                                        value={headerRecord['Date'] || ''}
+                                                        value={records[globalIdx]?.['Date'] || ''}
                                                         onChange={(e) => {
-                                                            const idx = records.findIndex(r => r === headerRecord);
-                                                            handleFieldChange(idx, 'Date', e.target.value, true);
+                                                            handleFieldChange(globalIdx, 'Date', e.target.value, true);
                                                         }}
-                                                        className={`border rounded px-3 py-2 w-full transition-all ${getFieldBorderClass(headerRecord['Row_Id'] || `temp-${records.findIndex(r => r === headerRecord)}`, 'Date')
+                                                        onBlur={() => {
+                                                            handleFieldBlur(globalIdx, 'Date', true);
+                                                        }}
+                                                        className={`border rounded px-3 py-2 w-full transition-all ${getFieldBorderClass(headerRecord['Row_Id'] || `temp-${globalIdx}`, 'Date')
                                                             }`}
                                                     />
                                                 </div>
@@ -546,25 +623,21 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
 
                         {/* Line Items - All Receipts */}
                         <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                            <div className="px-6 py-4 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
+                            <div className="px-6 py-4 bg-gray-50 border-b border-gray-200">
                                 <h3 className="text-lg font-semibold text-gray-900">Line Items</h3>
-                                <span className="text-sm text-gray-600">
-                                    Delete Receipt button removed - use delete on header if needed
-                                </span>
                             </div>
                             <div className="overflow-x-auto">
                                 <table className="w-full text-sm">
                                     <thead className="bg-gray-50 border-b border-gray-200">
                                         <tr>
-                                            <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Receipt #</th>
-                                            <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-                                            <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Image Preview</th>
-                                            <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Description</th>
-                                            <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Quantity</th>
-                                            <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Rate</th>
-                                            <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Amount</th>
-                                            <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Mismatch</th>
-                                            <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
+                                            <th className="px-2 py-2 text-left text-xs font-medium text-gray-500 uppercase w-20">Receipt #</th>
+                                            <th className="px-2 py-2 text-left text-xs font-medium text-gray-500 uppercase w-14">Status</th>
+                                            <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase w-[500px]">Image Preview</th>
+                                            <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase w-48">Description</th>
+                                            <th className="px-2 py-2 text-left text-xs font-medium text-gray-500 uppercase w-16">Qty</th>
+                                            <th className="px-2 py-2 text-left text-xs font-medium text-gray-500 uppercase w-28">Rate</th>
+                                            <th className="px-2 py-2 text-left text-xs font-medium text-gray-500 uppercase w-28">Amount</th>
+                                            <th className="px-2 py-2 text-left text-xs font-medium text-gray-500 uppercase w-20">Mismatch</th>
                                         </tr>
                                     </thead>
                                     <tbody className="divide-y divide-gray-200">
@@ -589,11 +662,11 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
                                                         className={`hover:bg-gray-50 transition-colors ${isRowEditing ? 'bg-yellow-50/30' : ''
                                                             }`}
                                                     >
-                                                        <td className="px-4 py-3 font-mono text-xs text-gray-600">
+                                                        <td className="px-2 py-3 font-mono text-xs text-gray-600">
                                                             {receiptNum}
                                                         </td>
-                                                        <td className="px-4 py-3">
-                                                            <div className="flex gap-2">
+                                                        <td className="px-2 py-3">
+                                                            <div className="flex gap-1 text-xs scale-90 origin-left">
                                                                 <StatusToggle
                                                                     status={record['Verification Status'] || 'Pending'}
                                                                     onChange={(newStatus: string) => {
@@ -602,7 +675,11 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
                                                                         updated[globalIdx] = { ...updated[globalIdx], 'Verification Status': newStatus };
                                                                         setRecords(updated);
                                                                         // CRITICAL FIX: Save immediately to database
-                                                                        updateAmountMutation.mutate({ record: updated[globalIdx] });
+                                                                        updateAmountMutation.mutate({ record: updated[globalIdx] }, {
+                                                                            onSuccess: () => {
+                                                                                queryClient.invalidateQueries({ queryKey: ['review-invoice-details'] });
+                                                                            }
+                                                                        });
                                                                     }}
                                                                 />
                                                                 {record['Row_Id'] && (
@@ -612,7 +689,7 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
                                                                                 deleteMutation.mutate(record['Row_Id']);
                                                                             }
                                                                         }}
-                                                                        className="px-2 py-1 text-red-600 hover:text-red-800 hover:bg-red-50 rounded border border-red-300 transition-colors"
+                                                                        className="px-1.5 py-1 text-red-600 hover:text-red-800 hover:bg-red-50 rounded border border-red-300 transition-colors"
                                                                         title="Delete record"
                                                                     >
                                                                         <Trash2 size={14} />
@@ -641,54 +718,46 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
                                                                 type="text"
                                                                 value={record['Description'] || ''}
                                                                 onChange={(e) => handleFieldChange(globalIdx, 'Description', e.target.value, false)}
-                                                                className={`border rounded px-2 py-1 w-full min-w-[150px] transition-all ${getFieldBorderClass(rowId, 'Description')
+                                                                onBlur={() => handleFieldBlur(globalIdx, 'Description', false)}
+                                                                className={`border rounded px-2 py-1 w-full max-w-[200px] transition-all ${getFieldBorderClass(rowId, 'Description')
                                                                     }`}
                                                             />
                                                         </td>
-                                                        <td className="px-4 py-3">
+                                                        <td className="px-2 py-3">
                                                             <input
                                                                 type="number"
                                                                 step="0.1"
                                                                 value={record['Quantity'] || ''}
                                                                 onChange={(e) => handleFieldChange(globalIdx, 'Quantity', e.target.value, false)}
-                                                                className={`border rounded px-2 py-1 w-20 transition-all ${getFieldBorderClass(rowId, 'Quantity')
+                                                                onBlur={() => handleFieldBlur(globalIdx, 'Quantity', false)}
+                                                                className={`border rounded px-2 py-1 w-10 transition-all ${getFieldBorderClass(rowId, 'Quantity')
                                                                     }`}
                                                             />
                                                         </td>
-                                                        <td className="px-4 py-3">
+                                                        <td className="px-2 py-3">
                                                             <input
                                                                 type="number"
                                                                 step="0.01"
                                                                 value={record['Rate'] || ''}
                                                                 onChange={(e) => handleFieldChange(globalIdx, 'Rate', e.target.value, false)}
-                                                                className={`border rounded px-2 py-1 w-24 transition-all ${getFieldBorderClass(rowId, 'Rate')
+                                                                onBlur={() => handleFieldBlur(globalIdx, 'Rate', false)}
+                                                                className={`border rounded px-2 py-1 w-16 transition-all ${getFieldBorderClass(rowId, 'Rate')
                                                                     }`}
                                                             />
                                                         </td>
-                                                        <td className="px-4 py-3">
+                                                        <td className="px-2 py-3">
                                                             <input
                                                                 type="number"
                                                                 step="0.01"
                                                                 value={record['Amount'] || ''}
                                                                 onChange={(e) => handleFieldChange(globalIdx, 'Amount', e.target.value, false)}
-                                                                className={`border rounded px-2 py-1 w-24 transition-all ${getFieldBorderClass(rowId, 'Amount')
+                                                                onBlur={() => handleFieldBlur(globalIdx, 'Amount', false)}
+                                                                className={`border rounded px-2 py-1 w-16 transition-all ${getFieldBorderClass(rowId, 'Amount')
                                                                     }`}
                                                             />
                                                         </td>
-                                                        <td className="px-4 py-3 text-red-600 font-medium">
+                                                        <td className="px-2 py-3 text-red-600 text-xs">
                                                             {record['Amount Mismatch'] ? `₹${record['Amount Mismatch']} ` : '—'}
-                                                        </td>
-                                                        <td className="px-4 py-3">
-                                                            {record['Receipt Link'] && (
-                                                                <a
-                                                                    href={record['Receipt Link']}
-                                                                    target="_blank"
-                                                                    rel="noopener noreferrer"
-                                                                    className="text-blue-600 hover:text-blue-800 text-xs underline"
-                                                                >
-                                                                    View
-                                                                </a>
-                                                            )}
                                                         </td>
                                                     </tr>
                                                 );
