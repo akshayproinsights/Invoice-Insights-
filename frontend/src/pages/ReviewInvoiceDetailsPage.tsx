@@ -24,6 +24,47 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
     // Map structure: rowId -> fieldName -> state
     const [fieldStates, setFieldStates] = useState<{ [key: string]: { [key: string]: string } }>({});
 
+    // Track in-progress edit values that shouldn't be overwritten by refetches
+    // Map structure: rowId -> fieldName -> value
+    const [editValues, setEditValues] = useState<{ [key: string]: { [key: string]: string } }>({});
+
+    // Get the current value for a field, preferring local edit value over records value
+    const getFieldValue = (globalIdx: number, field: string, rowId: string) => {
+        // If we have a local edit value, use it
+        if (editValues[rowId]?.[field] !== undefined) {
+            return editValues[rowId][field];
+        }
+        // Otherwise use the records value
+        return records[globalIdx]?.[field] || '';
+    };
+
+    // Set a local edit value
+    const setEditValue = (rowId: string, field: string, value: string) => {
+        setEditValues(prev => ({
+            ...prev,
+            [rowId]: {
+                ...prev[rowId],
+                [field]: value
+            }
+        }));
+    };
+
+    // Clear a local edit value (after save completes)
+    const clearEditValue = (rowId: string, field: string) => {
+        setEditValues(prev => {
+            const newState = { ...prev };
+            if (newState[rowId]) {
+                const { [field]: _, ...rest } = newState[rowId];
+                if (Object.keys(rest).length === 0) {
+                    delete newState[rowId];
+                } else {
+                    newState[rowId] = rest;
+                }
+            }
+            return newState;
+        });
+    };
+
 
     // Helper function to get border color based on field state
     const getFieldBorderClass = (rowId: string, fieldName: string, hasError: boolean = false) => {
@@ -583,14 +624,56 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
                                                     <label className="block text-sm font-medium text-gray-700 mb-1">Receipt Number</label>
                                                     <input
                                                         type="text"
-                                                        value={records[globalIdx]?.['Receipt Number'] || ''}
+                                                        value={getFieldValue(globalIdx, 'Receipt Number', headerRecord['Row_Id'] || `temp-${globalIdx}`)}
+                                                        onFocus={() => {
+                                                            // Initialize local edit value on focus
+                                                            const rowId = headerRecord['Row_Id'] || `temp-${globalIdx}`;
+                                                            const currentValue = records[globalIdx]?.['Receipt Number'] || '';
+                                                            setEditValue(rowId, 'Receipt Number', currentValue);
+                                                            updateFieldState(rowId, 'Receipt Number', 'editing');
+                                                        }}
                                                         onChange={(e) => {
-                                                            handleFieldChange(globalIdx, 'Receipt Number', e.target.value, true);
+                                                            // Only update local edit state, don't touch records
+                                                            const rowId = headerRecord['Row_Id'] || `temp-${globalIdx}`;
+                                                            setEditValue(rowId, 'Receipt Number', e.target.value);
                                                         }}
                                                         onBlur={() => {
-                                                            handleFieldBlur(globalIdx, 'Receipt Number', true);
+                                                            // Save the local edit value to the database
+                                                            const rowId = headerRecord['Row_Id'] || `temp-${globalIdx}`;
+                                                            const editedValue = editValues[rowId]?.['Receipt Number'];
+
+                                                            // Only save if we have an edit value (user actually focused and potentially edited)
+                                                            if (editedValue !== undefined) {
+                                                                // Update records state with the edited value
+                                                                const updated = [...records];
+                                                                updated[globalIdx] = { ...updated[globalIdx], 'Receipt Number': editedValue };
+                                                                setRecords(updated);
+
+                                                                // Clear any pending timeout
+                                                                if (saveTimeoutRef.current) {
+                                                                    clearTimeout(saveTimeoutRef.current);
+                                                                    saveTimeoutRef.current = null;
+                                                                }
+
+                                                                // Set to saving state
+                                                                updateFieldState(rowId, 'Receipt Number', 'saving');
+
+                                                                // Save to database
+                                                                updateDateMutation.mutate({ record: updated[globalIdx] }, {
+                                                                    onSuccess: () => {
+                                                                        updateFieldState(rowId, 'Receipt Number', 'saved');
+                                                                        setTimeout(() => updateFieldState(rowId, 'Receipt Number', 'idle'), 2000);
+                                                                        // Clear local edit value after successful save
+                                                                        clearEditValue(rowId, 'Receipt Number');
+                                                                        scheduleDelayedRefetch();
+                                                                    },
+                                                                    onError: () => {
+                                                                        updateFieldState(rowId, 'Receipt Number', 'error');
+                                                                    }
+                                                                });
+                                                            }
                                                         }}
-                                                        className={`border rounded px-3 py-2 w-[30%] transition-all ${!records[globalIdx]?.['Receipt Number'] || records[globalIdx]?.['Receipt Number'].trim() === ''
+                                                        className={`border rounded px-3 py-2 w-[30%] transition-all ${!getFieldValue(globalIdx, 'Receipt Number', headerRecord['Row_Id'] || `temp-${globalIdx}`) || getFieldValue(globalIdx, 'Receipt Number', headerRecord['Row_Id'] || `temp-${globalIdx}`).trim() === ''
                                                             ? 'border-red-500 bg-red-50'
                                                             : getFieldBorderClass(headerRecord['Row_Id'] || `temp-${globalIdx}`, 'Receipt Number')
                                                             }`}
