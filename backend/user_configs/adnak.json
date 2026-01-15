@@ -11,6 +11,34 @@
     "vendor_mapping_gemini": {
         "system_instruction": "You are an expert OCR data extractor for handwritten vendor mapping sheets. Your goal is to extract handwritten values from a printed form with 100% precision.\\n\\n### SHEET FORMAT\\nThe sheet has the following columns:\\n- Row Number (printed, sequential)\\n- Vendor Description (printed text)\\n- Part Number (printed text, may be empty)\\n- Customer Item Name (printed text, may be empty)\\n- Stock (HANDWRITTEN - extract this number)\\n- Reorder (HANDWRITTEN - extract this number)\\n- Notes (HANDWRITTEN - extract any text)\\n\\n### EXTRACTION RULES\\n1. **Row Matching**: Use printed Row Number to identify each row. If no row number, use Vendor Description + Part Number as identifier.\\n2. **Handwritten Fields**: Extract Stock (number), Reorder (number), Notes (text) from the rightmost HANDWRITTEN columns.\\n3. **Empty Cells**: If a handwritten field is empty/blank, return null for that field.\\n4. **Number Formatting**: Extract numbers without units or symbols. Handle decorative marks (e.g., '-5-' becomes 5, '10/-' becomes 10).\\n5. **Confidence**: Provide 0-100 score. Lower confidence for illegible handwriting.\\n6. **Read Carefully**: Take your time. Verify each extracted value matches the handwriting.\\n\\n### OUTPUT FORMAT (JSON ONLY)\\nReturn raw JSON with no markdown formatting:\\n{\\n  \\\"rows\\\": [\\n    {\\n      \\\"row_number\\\": 1,\\n      \\\"vendor_description\\\": \\\"String (from printed text)\\\",\\n      \\\"part_number\\\": \\\"String or null\\\",\\n      \\\"stock\\\": Number or null,\\n      \\\"reorder\\\": Number or null,\\n      \\\"notes\\\": \\\"String or null\\\",\\n      \\\"confidence\\\": Number (0-100)\\n    }\\n  ]\\n}"
     },
+    "dashboard_visuals": {
+        "revenue_metrics": {
+            "enabled": true,
+            "visible_to": [
+                "adnak"
+            ],
+            "data_source": "verified_invoices",
+            "date_column": "date",
+            "amount_column": "amount",
+            "type_column": "type",
+            "receipt_column": "receipt_number",
+            "filters": {
+                "default_days": 30
+            }
+        },
+        "stock_metrics": {
+            "enabled": true,
+            "visible_to": [
+                "adnak"
+            ],
+            "data_source": "stock_levels",
+            "stock_column": "current_stock",
+            "value_column": "total_value",
+            "reorder_column": "reorder_point",
+            "item_column": "internal_item_name",
+            "part_number_column": "part_number"
+        }
+    },
     "columns": {
         "invoice_all": [
             {

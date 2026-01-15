@@ -77,10 +77,12 @@ export interface StockHistoryResponse {
 export const getStockLevels = async (params?: {
     search?: string;
     status_filter?: string;
+    priority_filter?: string;
 }): Promise<{ items: StockLevel[]; count: number }> => {
     const queryParams = new URLSearchParams();
     if (params?.search) queryParams.append('search', params.search);
     if (params?.status_filter) queryParams.append('status_filter', params.status_filter);
+    if (params?.priority_filter) queryParams.append('priority_filter', params.priority_filter);
 
     const response = await apiClient.get(`/api/stock/levels?${queryParams.toString()}`);
     return response.data;

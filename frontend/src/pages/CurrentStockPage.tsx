@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { useOutletContext } from 'react-router-dom';
+import { useOutletContext, useSearchParams } from 'react-router-dom';
 import { Search, TrendingUp, AlertTriangle, XCircle, RefreshCw, Plus, ExternalLink, X, Package, ChevronDown, FileDown, Upload, Edit } from 'lucide-react';
 import {
     getStockLevels,
@@ -27,6 +27,7 @@ interface VendorItem {
 const CurrentStockPage: React.FC = () => {
     // Get context from Layout to set header actions
     const { setHeaderActions } = useOutletContext<{ setHeaderActions: (actions: React.ReactNode) => void }>();
+    const [searchParams] = useSearchParams();
 
     const [stockItems, setStockItems] = useState<StockLevel[]>([]);
     const [summary, setSummary] = useState<StockSummary>({
@@ -38,6 +39,10 @@ const CurrentStockPage: React.FC = () => {
     const [loading, setLoading] = useState(true);
     const [searchQuery, setSearchQuery] = useState('');
     const [statusFilter, setStatusFilter] = useState('all');
+    const [priorityFilter, setPriorityFilter] = useState(() => {
+        // Read from URL parameter if available
+        return searchParams.get('priority') || 'all';
+    });
     const [showAdjustmentModal, setShowAdjustmentModal] = useState(false);
     const [showHistoryModal, setShowHistoryModal] = useState(false);
     const [selectedPartHistory, setSelectedPartHistory] = useState<{ partNumber: string; itemName: string } | null>(null);
@@ -115,7 +120,7 @@ const CurrentStockPage: React.FC = () => {
         try {
             setLoading(true);
             const [itemsData, summaryData] = await Promise.all([
-                getStockLevels({ search: searchQuery, status_filter: statusFilter }),
+                getStockLevels({ search: searchQuery, status_filter: statusFilter, priority_filter: priorityFilter }),
                 getStockSummary(),
             ]);
 
@@ -156,7 +161,7 @@ const CurrentStockPage: React.FC = () => {
         } finally {
             setLoading(false);
         }
-    }, [searchQuery, statusFilter]);
+    }, [searchQuery, statusFilter, priorityFilter]);
 
     useEffect(() => {
         loadData();
@@ -528,6 +533,22 @@ const CurrentStockPage: React.FC = () => {
                             onChange={(e) => setSearchQuery(e.target.value)}
                             className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                         />
+                    </div>
+
+                    {/* Priority Filter Buttons */}
+                    <div className="flex gap-2">
+                        {['all', 'P0', 'P1', 'P2', 'P3'].map((priority) => (
+                            <button
+                                key={priority}
+                                onClick={() => setPriorityFilter(priority)}
+                                className={`px-3 py-2 rounded-lg text-sm font-medium transition ${priorityFilter === priority
+                                    ? 'bg-blue-600 text-white shadow-md'
+                                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                                    }`}
+                            >
+                                {priority === 'all' ? 'All' : priority}
+                            </button>
+                        ))}
                     </div>
 
                     {/* Status Filter */}

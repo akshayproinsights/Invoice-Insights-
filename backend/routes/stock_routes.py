@@ -73,6 +73,7 @@ def fuzzy_match_part_numbers(part1: str, part2: str, threshold: float = 90.0) ->
 async def get_stock_levels(
     search: Optional[str] = Query(None),
     status_filter: Optional[str] = Query(None),  # "all", "low_stock", "in_stock", "out_of_stock"
+    priority_filter: Optional[str] = Query(None),  # "all", "P0", "P1", "P2", "P3"
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     """
@@ -107,6 +108,10 @@ async def get_stock_levels(
                 items = [item for item in items if 0 < item.get("current_stock", 0) < item.get("reorder_point", DEFAULT_REORDER_POINT)]
             elif status_filter == "in_stock":
                 items = [item for item in items if item.get("current_stock", 0) >= item.get("reorder_point", DEFAULT_REORDER_POINT)]
+        
+        # Apply priority filter (post-query)
+        if priority_filter and priority_filter != "all":
+            items = [item for item in items if item.get("priority") == priority_filter]
         
         # Add computed status field
         for item in items:
@@ -453,17 +458,18 @@ def recalculate_stock_for_user(username: str):
     
     # 4. GET EXISTING STOCK LEVELS TO PRESERVE MANUAL EDITS
     existing_stock_levels = db.client.table("stock_levels")\
-        .select("part_number, internal_item_name, reorder_point, old_stock")\
+        .select("part_number, internal_item_name, reorder_point, old_stock, priority")\
         .eq("username", username)\
         .execute()
     
-    # Build lookup dict: (part_number, internal_item_name) -> {reorder_point, old_stock}
+    # Build lookup dict: (part_number, internal_item_name) -> {reorder_point, old_stock, priority}
     existing_values = {}
     for stock in (existing_stock_levels.data or []):
         key = (stock.get("part_number"), stock.get("internal_item_name"))
         existing_values[key] = {
             "reorder_point": stock.get("reorder_point"),
-            "old_stock": stock.get("old_stock")
+            "old_stock": stock.get("old_stock"),
+            "priority": stock.get("priority")
         }
     
     logger.info(f"Found {len(existing_values)} existing stock levels to preserve")

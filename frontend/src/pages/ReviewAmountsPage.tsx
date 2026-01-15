@@ -32,18 +32,10 @@ const ReviewAmountsPage: React.FC = () => {
 
     // Filter records based on showCompleted toggle
     const filteredRecords = useMemo(() => {
-        // DEBUG: Log first record to see actual column names
-        if (records.length > 0) {
-            console.log('🔍 DEBUG - First record keys:', Object.keys(records[0]));
-            console.log('🔍 DEBUG - First record Verification Status:', records[0]['Verification Status']);
-            console.log('🔍 DEBUG - First record verification_status:', records[0]['verification_status']);
-        }
-
         // Show Pending and Duplicate Receipt Number by default
         // If showCompleted is true, also show Done records
         return records.filter(r => {
             const status = r['Verification Status'] || 'Pending';
-            console.log('🔍 Filtering record - Status:', status, 'showCompleted:', showCompleted);
             if (status === 'Pending' || status === 'Duplicate Receipt Number') {
                 return true;
             }

@@ -359,12 +359,10 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
     const handleSyncFinish = async () => {
         // Prevent multiple simultaneous clicks
         if (isProcessing) {
-            console.log('⏸️ Sync already in progress, ignoring duplicate click');
             return;
         }
 
         setIsProcessing(true);
-        console.log('🚀 Starting Sync & Finish process...');
 
         // Validate headers (records with Date field) - must have Receipt Number and Date
         const invalidHeaders = records.filter(r =>

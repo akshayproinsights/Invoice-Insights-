@@ -36,11 +36,12 @@ app.add_middleware(
 )
 
 # Import routers
-from routes import auth, upload, invoices, review, verified, config_api, inventory, inventory_mapping, vendor_mapping_routes, stock_routes, stock_mapping_upload_routes
+from routes import auth, upload, invoices, review, verified, config_api, inventory, inventory_mapping, vendor_mapping_routes, stock_routes, stock_mapping_upload_routes, dashboard_routes
 
 # Register routers
 app.include_router(auth.router, prefix="/api/auth", tags=["Authentication"])
 app.include_router(config_api.router, prefix="/api", tags=["Configuration"])
+app.include_router(dashboard_routes.router, prefix="/api/dashboard", tags=["Dashboard"])
 app.include_router(upload.router, prefix="/api/upload", tags=["Upload & Processing"])
 app.include_router(inventory.router, prefix="/api/inventory", tags=["Inventory"])
 app.include_router(inventory_mapping.router, prefix="/api/inventory-mapping", tags=["Inventory Mapping"])
