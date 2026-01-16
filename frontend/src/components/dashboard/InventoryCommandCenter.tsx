@@ -301,7 +301,7 @@ const InventoryCommandCenter: React.FC = () => {
                     className="w-full flex items-center justify-center gap-2 bg-indigo-600 text-white px-6 py-3 rounded-lg hover:bg-indigo-700 transition font-medium"
                 >
                     <span>
-                        View All {totalItems} {activeTab} Items & Reorder
+                        Go to Stock Register
                     </span>
                     <ChevronRight size={20} />
                 </button>

@@ -713,8 +713,8 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
                                         <tr>
                                             <th className="px-2 py-2 text-left text-xs font-medium text-gray-500 uppercase w-20">Receipt #</th>
                                             <th className="px-2 py-2 text-left text-xs font-medium text-gray-500 uppercase w-14">Status</th>
-                                            <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase w-[500px]">Image Preview</th>
-                                            <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase w-48">Description</th>
+                                            <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase w-[600px]">Image Preview</th>
+                                            <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase w-56">Description</th>
                                             <th className="px-2 py-2 text-left text-xs font-medium text-gray-500 uppercase w-16">Qty</th>
                                             <th className="px-2 py-2 text-left text-xs font-medium text-gray-500 uppercase w-28">Rate</th>
                                             <th className="px-2 py-2 text-left text-xs font-medium text-gray-500 uppercase w-28">Amount</th>
@@ -811,7 +811,7 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
                                                                 value={record['Quantity'] || ''}
                                                                 onChange={(e) => handleFieldChange(globalIdx, 'Quantity', e.target.value, false)}
                                                                 onBlur={() => handleFieldBlur(globalIdx, 'Quantity', false)}
-                                                                className={`border rounded px-2 py-1 w-10 transition-all ${getFieldBorderClass(rowId, 'Quantity')
+                                                                className={`border rounded px-2 py-1 w-14 transition-all [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${getFieldBorderClass(rowId, 'Quantity')
                                                                     }`}
                                                             />
                                                         </td>
@@ -822,7 +822,7 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
                                                                 value={record['Rate'] || ''}
                                                                 onChange={(e) => handleFieldChange(globalIdx, 'Rate', e.target.value, false)}
                                                                 onBlur={() => handleFieldBlur(globalIdx, 'Rate', false)}
-                                                                className={`border rounded px-2 py-1 w-16 transition-all ${getFieldBorderClass(rowId, 'Rate')
+                                                                className={`border rounded px-2 py-1 w-20 transition-all [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${getFieldBorderClass(rowId, 'Rate')
                                                                     }`}
                                                             />
                                                         </td>
@@ -833,7 +833,7 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
                                                                 value={record['Amount'] || ''}
                                                                 onChange={(e) => handleFieldChange(globalIdx, 'Amount', e.target.value, false)}
                                                                 onBlur={() => handleFieldBlur(globalIdx, 'Amount', false)}
-                                                                className={`border rounded px-2 py-1 w-16 transition-all ${getFieldBorderClass(rowId, 'Amount')
+                                                                className={`border rounded px-2 py-1 w-20 transition-all [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${getFieldBorderClass(rowId, 'Amount')
                                                                     }`}
                                                             />
                                                         </td>

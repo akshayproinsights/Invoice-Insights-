@@ -134,16 +134,17 @@ async def update_single_review_date(
         from database_helpers import convert_numeric_types
         record = convert_numeric_types(record)
         
-        # Filter to only columns that exist in verification_dates (exclude row_id from update data)
+        # Filter to only columns that exist in verification_dates (exclude row_id and id from update data)
+        # CRITICAL: Never include 'id' in update_data as it's the primary key and causes constraint violations
         valid_cols = {
-            'id', 'username', 'receipt_number', 'date', 'audit_findings',
+            'username', 'receipt_number', 'date', 'audit_findings',
             'verification_status', 'receipt_link', 'upload_date',
             'created_at', 'model_used', 'model_accuracy', 'input_tokens',
             'output_tokens', 'total_tokens', 'cost_inr', 'fallback_attempted',
             'fallback_reason', 'processing_errors', 'date_and_receipt_combined_bbox',
             'receipt_number_bbox', 'date_bbox'
         }
-        update_data = {k: v for k, v in record.items() if k in valid_cols and k != 'row_id'}
+        update_data = {k: v for k, v in record.items() if k in valid_cols and k not in ['row_id', 'id']}
         
         # UPDATE 1: Update the header record itself
         db.update('verification_dates', update_data, {'username': username, 'row_id': row_id})
@@ -400,9 +401,10 @@ async def update_single_review_amount(
         from database_helpers import convert_numeric_types
         record = convert_numeric_types(record)
         
-        # Filter to only columns that exist in verification_amounts (exclude row_id from update data)
+        # Filter to only columns that exist in verification_amounts (exclude row_id and id from update data)
+        # CRITICAL: Never include 'id' in update_data as it's the primary key and causes constraint violations
         valid_cols = {
-            'id', 'username', 'receipt_number', 'description', 'quantity',
+            'username', 'receipt_number', 'description', 'quantity',
             'rate', 'amount', 'amount_mismatch', 'verification_status',
             'receipt_link', 'created_at', 'model_used',
             'model_accuracy', 'input_tokens', 'output_tokens', 'total_tokens',
@@ -411,7 +413,7 @@ async def update_single_review_amount(
             'receipt_number_bbox', 'description_bbox', 'quantity_bbox',
             'rate_bbox', 'amount_bbox'
         }
-        update_data = {k: v for k, v in record.items() if k in valid_cols and k != 'row_id'}
+        update_data = {k: v for k, v in record.items() if k in valid_cols and k not in ['row_id', 'id']}
         
         # UPDATE the record (not DELETE+INSERT)
         db.update('verification_amounts', update_data, {'username': username, 'row_id': row_id})

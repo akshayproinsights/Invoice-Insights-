@@ -417,7 +417,7 @@ const DashboardPage: React.FC = () => {
             <div className="grid grid-cols-1 lg:grid-cols-7 gap-6">
                 {/* Sales Trend Chart - Wider (takes 4/7 of space) */}
                 <div className="lg:col-span-4 bg-white p-6 rounded-lg shadow-sm border border-gray-200">
-                    <h3 className="text-lg font-semibold text-gray-900 mb-4">Sales Trend</h3>
+                    <h3 className="text-lg font-semibold text-gray-900 mb-4">Sales Trend • Daily</h3>
                     {salesLoading ? (
                         <div className="flex items-center justify-center h-80">
                             <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600"></div>
