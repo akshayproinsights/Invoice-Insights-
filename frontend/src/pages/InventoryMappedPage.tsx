@@ -29,7 +29,7 @@ const InventoryMappedPage: React.FC = () => {
     });
 
     const handleUnmap = (entry: VendorMappingEntry) => {
-        if (confirm(`Are you sure you want to unlink "${entry.vendor_description}"? It will return to Link Items.`)) {
+        if (confirm(`⚠️ Are you sure you want to unlink "${entry.vendor_description}"?\n\nThis action cannot be undone. The item will be returned to Link Items.`)) {
             if (entry.id) {
                 unmapMutation.mutate(entry.id);
             }

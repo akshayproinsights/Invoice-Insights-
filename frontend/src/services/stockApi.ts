@@ -26,6 +26,7 @@ export interface StockLevel {
     has_uploaded_data?: boolean;  // Flag for highlighting
     uploaded_at?: string;  // Timestamp of upload
     priority?: string;
+    latest_vendor_rate?: number;  // Latest vendor rate for displaying in Total Value column
 }
 
 export interface StockSummary {
@@ -50,6 +51,7 @@ export interface StockUpdate {
 }
 
 export interface StockTransaction {
+    id?: string;  // Transaction ID for editing/deleting (UUID)
     type: 'IN' | 'OUT';
     date: string | null;
     invoice_number: string | null;
@@ -68,6 +70,7 @@ export interface StockHistoryResponse {
         total_in: number;
         total_out: number;
         transaction_count: number;
+        old_stock?: number | null;
     };
 }
 
@@ -132,5 +135,33 @@ export const getStockHistory = async (
 ): Promise<StockHistoryResponse> => {
     const response = await apiClient.get(`/api/stock/history/${encodeURIComponent(partNumber)}`);
     return response.data;
+};
+
+/**
+ * Update a stock transaction (quantity/rate)
+ */
+export const updateStockTransaction = async (params: {
+    transactionId: string;
+    type: 'IN' | 'OUT';
+    quantity: number;
+    rate?: number;
+}): Promise<void> => {
+    await apiClient.put(`/api/stock/transaction/${params.transactionId}`, {
+        type: params.type,
+        quantity: params.quantity,
+        rate: params.rate
+    });
+};
+
+/**
+ * Delete a stock transaction
+ */
+export const deleteStockTransaction = async (params: {
+    transactionId: string;
+    type: 'IN' | 'OUT';
+}): Promise<void> => {
+    await apiClient.delete(`/api/stock/transaction/${params.transactionId}`, {
+        data: { type: params.type }
+    });
 };
 

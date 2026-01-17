@@ -69,6 +69,8 @@ class R2StorageClient:
         try:
             client = self.get_client()
             
+            # Note: R2 doesn't support S3 ACLs. Public access is controlled
+            # at the bucket level via R2 dashboard settings.
             extra_args = {}
             if content_type:
                 extra_args['ContentType'] = content_type
@@ -172,12 +174,26 @@ class R2StorageClient:
         Returns:
             Public URL string, or None if public base URL not configured
         """
+        # Ensure configuration is loaded
+        if self._public_base_url is None:
+            r2_config = get_r2_config()
+            if r2_config:
+                self._public_base_url = r2_config.get("public_base_url")
+                logger.info(f"🔧 DEBUG: Loaded public_base_url from config: {self._public_base_url}")
+        
         if self._public_base_url:
             # Remove trailing slash if present
             base_url = self._public_base_url.rstrip('/')
-            # FIXED: Include bucket name in URL path for R2 public access
+            # For R2.dev public URLs, include bucket name in path
             # Format: https://pub-xxx.r2.dev/{bucket}/{key}
-            return f"{base_url}/{bucket}/{key}"
+            final_url = f"{base_url}/{bucket}/{key}"
+            logger.info(f"🔗 DEBUG: Generated public URL: {final_url}")
+            logger.info(f"   - Base URL: {base_url}")
+            logger.info(f"   - Bucket: {bucket}")
+            logger.info(f"   - Key: {key}")
+            return final_url
+        else:
+            logger.warning(f"⚠️ DEBUG: No public_base_url configured! Cannot generate public URL for {bucket}/{key}")
         
         return None
     
@@ -208,6 +224,9 @@ _storage_client: Optional[R2StorageClient] = None
 def get_storage_client() -> R2StorageClient:
     """Get the global R2 storage client instance"""
     global _storage_client
+    # Force reload to pick up config changes during development
+    # Comment out this line in production for better performance
+    _storage_client = None  # TEMPORARY: Force reload on every call
     if _storage_client is None:
         _storage_client = R2StorageClient()
     return _storage_client

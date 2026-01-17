@@ -581,13 +581,13 @@ def process_inventory_batch(
                 logger.error(f"Error checking for duplicates: {e}")
                 # Continue processing even if duplicate check fails
             
-            # Generate presigned URL for receipt link
-            client = storage.get_client()
-            receipt_link = client.generate_presigned_url(
-                'get_object',
-                Params={'Bucket': r2_bucket, 'Key': file_key},
-                ExpiresIn=604800  # 7 days
-            )
+            # Generate permanent public URL for receipt link
+            receipt_link = storage.get_public_url(r2_bucket, file_key)
+            if not receipt_link:
+                logger.warning(f"Public URL not configured, falling back to R2 path for {file_key}")
+                receipt_link = f"r2://{r2_bucket}/{file_key}"
+            else:
+                logger.info(f"Generated permanent public URL for {file_key}")
             
             # Process with Gemini AI using VENDOR prompt
             invoice_data = process_vendor_invoice(

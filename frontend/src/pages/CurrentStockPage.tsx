@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useOutletContext, useSearchParams } from 'react-router-dom';
-import { Search, TrendingUp, AlertTriangle, XCircle, RefreshCw, Plus, ExternalLink, X, Package, ChevronDown, FileDown, Upload, Edit } from 'lucide-react';
+import { Search, TrendingUp, AlertTriangle, XCircle, RefreshCw, ExternalLink, X, Package, ChevronDown, FileDown, Upload, Check, Trash2 } from 'lucide-react';
 import {
     getStockLevels,
     getStockSummary,
@@ -8,6 +8,8 @@ import {
     adjustStock,
     calculateStockLevels,
     getStockHistory,
+    updateStockTransaction,
+    deleteStockTransaction,
     type StockLevel,
     type StockSummary,
     type StockTransaction,
@@ -23,6 +25,159 @@ interface VendorItem {
     rate?: number;
     match_score?: number;
 }
+
+
+// SmartEditableCell State Types
+type CellState = 'default' | 'editing' | 'success' | 'error';
+
+interface SmartEditableCellProps {
+    value: number;
+    itemId: number;
+    field: 'old_stock' | 'reorder_point';
+    onSave: (id: number, field: string, value: number) => Promise<void>;
+    isEditing: boolean;
+    onEditStart: () => void;
+    onEditEnd: () => void;
+    min?: number;
+    step?: number;
+}
+
+// SmartEditableCell Component - Traffic Light Editing System
+const SmartEditableCell: React.FC<SmartEditableCellProps> = ({
+    value,
+    itemId,
+    field,
+    onSave,
+    isEditing,
+    onEditStart,
+    onEditEnd,
+    min = 0,
+    step = 1
+}) => {
+    const [localValue, setLocalValue] = useState(value);
+    const [cellState, setCellState] = useState<CellState>('default');
+    const [showCheck, setShowCheck] = useState(false);
+    const inputRef = useRef<HTMLInputElement>(null);
+
+    // Sync with prop value when it changes
+    useEffect(() => {
+        setLocalValue(value);
+    }, [value]);
+
+    const handleFocus = () => {
+        onEditStart();
+        setCellState('editing');
+    };
+
+    const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const newValue = e.target.value;
+
+        // Validate input
+        if (newValue === '') {
+            setLocalValue(0);
+            setCellState('editing');
+            return;
+        }
+
+        const numValue = parseFloat(newValue);
+        if (isNaN(numValue) || numValue < (min || 0)) {
+            setCellState('error');
+        } else {
+            setCellState('editing');
+            setLocalValue(numValue);
+        }
+    };
+
+    const handleBlur = async () => {
+        // Don't save if there's an error state
+        if (cellState === 'error') {
+            return;
+        }
+
+        // Only save if value changed
+        if (localValue !== value) {
+            try {
+                await onSave(itemId, field, localValue);
+
+                // Success state
+                setCellState('success');
+                setShowCheck(true);
+
+                // Flash green for 1.5 seconds
+                setTimeout(() => {
+                    setCellState('default');
+                    setShowCheck(false);
+                    onEditEnd();
+                }, 1500);
+            } catch (error) {
+                // Error state
+                setCellState('error');
+                console.error('Save failed:', error);
+            }
+        } else {
+            setCellState('default');
+            onEditEnd();
+        }
+    };
+
+    const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+        if (e.key === 'Enter') {
+            inputRef.current?.blur();
+        } else if (e.key === 'Escape') {
+            setLocalValue(value);
+            setCellState('default');
+            onEditEnd();
+            inputRef.current?.blur();
+        }
+    };
+
+    // Background color based on state
+    const getBgColor = () => {
+        switch (cellState) {
+            case 'editing': return 'bg-yellow-50';
+            case 'success': return 'bg-green-100';
+            case 'error': return 'bg-red-50';
+            default: return 'bg-white hover:bg-gray-50';
+        }
+    };
+
+    // Border color based on state
+    const getBorderColor = () => {
+        switch (cellState) {
+            case 'editing': return 'border-yellow-400 ring-2 ring-yellow-200';
+            case 'success': return 'border-green-500';
+            case 'error': return 'border-red-500 ring-2 ring-red-200';
+            default: return 'border-gray-300';
+        }
+    };
+
+    return (
+        <div className="relative">
+            <input
+                ref={inputRef}
+                type="number"
+                value={localValue}
+                onFocus={handleFocus}
+                onChange={handleChange}
+                onBlur={handleBlur}
+                onKeyDown={handleKeyDown}
+                disabled={cellState === 'success'}
+                className={`w-full px-2 py-1 border rounded text-right text-sm transition-all duration-200 
+                    ${getBgColor()} ${getBorderColor()}
+                    focus:outline-none
+                    disabled:cursor-wait
+                `}
+                min={min}
+                step={step}
+            />
+            {showCheck && (
+                <div className="absolute right-2 top-1/2 transform -translate-y-1/2">
+                    <Check size={14} className="text-green-600" />
+                </div>
+            )}
+        </div>
+    );
+};
 
 const CurrentStockPage: React.FC = () => {
     // Get context from Layout to set header actions
@@ -43,6 +198,8 @@ const CurrentStockPage: React.FC = () => {
         // Read from URL parameter if available
         return searchParams.get('priority') || 'all';
     });
+    const [setupModeFilter, setSetupModeFilter] = useState(false);
+    const [showMappedItems, setShowMappedItems] = useState(true); // For progress widget
     const [showAdjustmentModal, setShowAdjustmentModal] = useState(false);
     const [showHistoryModal, setShowHistoryModal] = useState(false);
     const [selectedPartHistory, setSelectedPartHistory] = useState<{ partNumber: string; itemName: string } | null>(null);
@@ -50,6 +207,8 @@ const CurrentStockPage: React.FC = () => {
 
     // Edit mode state
     const [editingStockId, setEditingStockId] = useState<number | null>(null);
+    const [activeEditCells, setActiveEditCells] = useState<Set<string>>(new Set());
+    const [pendingSetupCount, setPendingSetupCount] = useState(0);
 
     // Mapping sheet upload state
     const [isUploading, setIsUploading] = useState(false);
@@ -63,6 +222,7 @@ const CurrentStockPage: React.FC = () => {
     const [loadingSuggestions, setLoadingSuggestions] = useState<{ [key: number]: boolean }>({});
     const [flashGreen, setFlashGreen] = useState<{ [key: number]: boolean }>({});
     const [localCustomerItems, setLocalCustomerItems] = useState<{ [key: number]: string }>({});
+    const [isMappingInProgress, setIsMappingInProgress] = useState(false); // Lock to prevent re-sort during mapping;
 
     const searchTimeoutRef = useRef<{ [key: number]: number }>({});
     const dropdownRef = useRef<HTMLDivElement>(null);
@@ -124,19 +284,22 @@ const CurrentStockPage: React.FC = () => {
                 getStockSummary(),
             ]);
 
-            // Sort items: Added (with customer_items) first, then Skipped/unmapped at bottom
-            const sortedItems = [...itemsData.items].sort((a, b) => {
-                const aHasCustomer = !!a.customer_items;
-                const bHasCustomer = !!b.customer_items;
+            // Only sort if there are NO active edits AND no mapping in progress (preserve order during editing)
+            let sortedItems = [...itemsData.items];
+            if (activeEditCells.size === 0 && !isMappingInProgress) {
+                sortedItems = sortedItems.sort((a, b) => {
+                    const aHasCustomer = !!a.customer_items;
+                    const bHasCustomer = !!b.customer_items;
 
-                if (aHasCustomer && !bHasCustomer) return -1;
-                if (!aHasCustomer && bHasCustomer) return 1;
+                    if (aHasCustomer && !bHasCustomer) return -1;
+                    if (!aHasCustomer && bHasCustomer) return 1;
 
-                // Within same group, sort alphabetically by customer item or internal name
-                const aName = a.customer_items || a.internal_item_name || '';
-                const bName = b.customer_items || b.internal_item_name || '';
-                return aName.localeCompare(bName);
-            });
+                    // Within same group, sort alphabetically by customer item or internal name
+                    const aName = a.customer_items || a.internal_item_name || '';
+                    const bName = b.customer_items || b.internal_item_name || '';
+                    return aName.localeCompare(bName);
+                });
+            }
 
             // Set default reorder_point to 2 if not set
             sortedItems.forEach(item => {
@@ -147,6 +310,10 @@ const CurrentStockPage: React.FC = () => {
 
             setStockItems(sortedItems);
             setSummary(summaryData);
+
+            // Calculate counts for progress widget
+            const pendingCount = sortedItems.filter(item => !item.customer_items).length;
+            setPendingSetupCount(pendingCount);
 
             // Initialize local customer items state
             const localItems: { [key: number]: string } = {};
@@ -161,7 +328,7 @@ const CurrentStockPage: React.FC = () => {
         } finally {
             setLoading(false);
         }
-    }, [searchQuery, statusFilter, priorityFilter]);
+    }, [searchQuery, statusFilter, priorityFilter, activeEditCells]);
 
     useEffect(() => {
         loadData();
@@ -201,10 +368,40 @@ const CurrentStockPage: React.FC = () => {
         }
     };
 
-    // === Simple Edit Pattern - Always Editable with Cell Locking ===
+    // === Traffic Light Edit Pattern with SmartEditableCell ===
     const [savingFields, setSavingFields] = useState<{ [key: string]: boolean }>({});
 
-    const handleFieldUpdate = async (id: number, field: 'reorder_point' | 'old_stock' | 'priority', value: number | string) => {
+    // Smart Cell Save Handler
+    const handleSmartCellSave = async (id: number, field: string, value: number) => {
+        const fieldKey = `${id}-${field}`;
+
+        // Mark cell as active
+        setActiveEditCells(prev => new Set(prev).add(fieldKey));
+
+        // Update local state immediately
+        setStockItems(prev => prev.map(item =>
+            item.id === id ? { ...item, [field]: value } : item
+        ));
+
+        try {
+            const updates = { [field]: value };
+            // @ts-ignore
+            await updateStockLevel(id, updates);
+        } catch (error) {
+            console.error('Error updating stock level:', error);
+            throw error; // Let SmartEditableCell handle error state
+        } finally {
+            // Remove cell from active edits
+            setActiveEditCells(prev => {
+                const newSet = new Set(prev);
+                newSet.delete(fieldKey);
+                return newSet;
+            });
+        }
+    };
+
+    // Handle Priority Field Update (non-numeric field)
+    const handleFieldUpdate = async (id: number, field: 'priority', value: string) => {
         const fieldKey = `${id}-${field}`;
 
         // Update local state immediately
@@ -221,7 +418,7 @@ const CurrentStockPage: React.FC = () => {
             await updateStockLevel(id, updates);
         } catch (error) {
             console.error('Error updating stock level:', error);
-            alert('Failed to save');
+            alert('Failed to save priority');
             // Revert on error
             await loadData();
         } finally {
@@ -296,6 +493,9 @@ const CurrentStockPage: React.FC = () => {
     // Handle selecting a vendor item
     const handleSelectVendorItem = async (item: StockLevel, vendorItem: VendorItem) => {
         try {
+            // Lock sorting to prevent row jump
+            setIsMappingInProgress(true);
+
             // Create vendor mapping entry using bulk-save endpoint
             const response = await apiClient.post('/api/vendor-mapping/entries/bulk-save', {
                 entries: [{
@@ -326,11 +526,17 @@ const CurrentStockPage: React.FC = () => {
                 }, 3000);
 
                 // Reload data after a short delay to reflect changes
-                setTimeout(() => loadData(), 500);
+                setTimeout(() => {
+                    loadData();
+                    // Release the lock AFTER data loads
+                    setIsMappingInProgress(false);
+                }, 500);
             } else {
+                setIsMappingInProgress(false);
                 throw new Error('Failed to create mapping');
             }
         } catch (error) {
+            setIsMappingInProgress(false);
             console.error('Error creating vendor mapping:', error);
             alert('Failed to link customer item');
         }
@@ -444,6 +650,21 @@ const CurrentStockPage: React.FC = () => {
         }
     };
 
+    // Handle delete mapping
+    const handleDeleteMapping = async (item: StockLevel) => {
+        if (!confirm(`Delete mapping for "${item.part_number}"?\n\nThis will:\n- Remove the customer item mapping\n- Return this item to unmapped state\n- Trigger stock recalculation`)) {
+            return;
+        }
+
+        try {
+            await apiClient.delete(`/api/stock/mapping/${item.part_number}`);
+            await loadData(); // Refresh entire table
+        } catch (error) {
+            console.error('Error deleting mapping:', error);
+            alert('Failed to delete mapping. Please try again.');
+        }
+    };
+
     // Status badge
     const getStatusBadge = (status: string) => {
         const colors = {
@@ -535,6 +756,39 @@ const CurrentStockPage: React.FC = () => {
                         />
                     </div>
 
+                    {/* Mapping Progress Widget - Gamified Segmented Control */}
+                    <div className="flex items-center gap-0 rounded-full overflow-hidden border-2 border-gray-200 shadow-sm">
+                        {/* Left Segment: Mapped Items (Green) */}
+                        <button
+                            onClick={() => {
+                                setShowMappedItems(true);
+                                setSetupModeFilter(false);
+                            }}
+                            className={`px-4 py-2 text-sm font-semibold transition-all flex items-center gap-2 whitespace-nowrap ${showMappedItems && !setupModeFilter
+                                ? 'bg-green-500 text-white shadow-md'
+                                : 'bg-white text-green-700 hover:bg-green-50'
+                                }`}
+                        >
+                            <span>✅</span>
+                            <span>{stockItems.filter(item => item.customer_items).length} Mapped</span>
+                        </button>
+
+                        {/* Right Segment: To Do Items (Softer Orange) */}
+                        <button
+                            onClick={() => {
+                                setShowMappedItems(false);
+                                setSetupModeFilter(true);
+                            }}
+                            className={`px-4 py-2 text-sm font-semibold transition-all flex items-center gap-2 whitespace-nowrap ${setupModeFilter
+                                ? 'bg-amber-100 text-amber-800 shadow-md'
+                                : 'bg-amber-100 text-amber-800 hover:bg-amber-50'
+                                }`}
+                        >
+                            <span>⚠️</span>
+                            <span>{pendingSetupCount} To Do</span>
+                        </button>
+                    </div>
+
                     {/* Priority Filter Buttons */}
                     <div className="flex gap-2">
                         {['all', 'P0', 'P1', 'P2', 'P3'].map((priority) => (
@@ -563,14 +817,6 @@ const CurrentStockPage: React.FC = () => {
                         <option value="out_of_stock">Out of Stock</option>
                     </select>
 
-                    {/* Manual Adjustment Button */}
-                    <button
-                        onClick={() => setShowAdjustmentModal(true)}
-                        className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 whitespace-nowrap"
-                    >
-                        <Plus size={16} />
-                        Manual Stock Adjustment
-                    </button>
                 </div>
             </div>
 
@@ -584,244 +830,288 @@ const CurrentStockPage: React.FC = () => {
                     </div>
                 ) : (
                     <div className="overflow-x-auto">
-                        <table className="w-full">
+                        <table className="w-full table-fixed">
                             <thead className="bg-gray-50 border-b border-gray-200">
                                 <tr>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase w-12">
-                                        Edit
-                                    </th>
+                                    {/* Col 1: Internal Item Name - Fluid (w-auto) */}
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">
                                         Internal Item Name
                                     </th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">
+                                    {/* Col 2: Part Number - Fixed w-32 */}
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase w-32">
                                         Part Number
                                     </th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">
+                                    {/* Col 3: Customer Item - Fixed w-48 */}
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase w-48">
                                         Customer Item
                                     </th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">
-                                        Priority
+                                    {/* Col 4: Priority - Fixed w-16 (Reduced) */}
+                                    <th className="px-4 py-3 text-center text-xs font-medium text-gray-600 uppercase w-16">
+                                        PRI
                                     </th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">
+                                    {/* Col 5: Status - Fixed w-24 */}
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase w-24">
                                         Status
                                     </th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">
-                                        Reorder Point
+                                    {/* Col 6: Opening (Old Stock) - Fixed w-20, Gray Background, Right Aligned */}
+                                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-600 uppercase w-20 bg-gray-50">
+                                        Opening
                                     </th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">
-                                        Old Stock
+                                    {/* Col 7: Purchased (In) - Fixed w-20, Right Aligned */}
+                                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-600 uppercase w-20">
+                                        In
                                     </th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">
-                                        Stock On Hand
+                                    {/* Col 8: Sold (Out) - Fixed w-20, Right Aligned */}
+                                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-600 uppercase w-20">
+                                        Out
                                     </th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">
-                                        Vendor Rate (IN)
+                                    {/* Col 9: Stock On Hand (Result) - Fixed w-24, Right Aligned */}
+                                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-600 uppercase w-24">
+                                        On Hand
                                     </th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">
-                                        Total Value
+                                    {/* Col 10: Total Value - Fixed w-32, Right Aligned */}
+                                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-600 uppercase w-32">
+                                        Value
                                     </th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">
-                                        Actions
+                                    {/* Col 11: History - Fixed w-20 */}
+                                    <th className="px-4 py-3 text-center text-xs font-medium text-gray-600 uppercase w-20">
+                                        History
+                                    </th>
+                                    {/* Col 12: Delete - Fixed w-16 */}
+                                    <th className="px-4 py-3 text-center text-xs font-medium text-gray-600 uppercase w-16">
+
                                     </th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-gray-200">
-                                {stockItems.map((item) => {
-                                    const hasCustomerItem = !!localCustomerItems[item.id];
-                                    const isFlashing = flashGreen[item.id];
-                                    const hasUploadedData = item.has_uploaded_data === true;
+                                {stockItems
+                                    .filter(item => {
+                                        // Apply Setup Mode filter if enabled
+                                        if (setupModeFilter) {
+                                            return !item.customer_items; // Show only unmapped items
+                                        }
+                                        return true; // Show all items
+                                    })
+                                    .map((item) => {
+                                        const hasCustomerItem = !!localCustomerItems[item.id];
+                                        const isFlashing = flashGreen[item.id];
 
-                                    const bgColor = isFlashing
-                                        ? 'bg-green-50'
-                                        : hasUploadedData
-                                            ? 'bg-yellow-50 border-l-4 border-l-blue-500'
-                                            : hasCustomerItem
-                                                ? 'bg-green-50'
-                                                : 'bg-white';
+                                        return (
+                                            <tr
+                                                key={item.id}
+                                                className="bg-white hover:bg-gray-50 transition-colors"
+                                            >
+                                                {/* Col 1: Internal Item Name - Fluid, Text Wrapping */}
+                                                <td className="px-4 py-3 text-sm text-gray-900">
+                                                    <span className="whitespace-normal break-words">{item.internal_item_name}</span>
+                                                </td>
 
-                                    return (
-                                        <tr
-                                            key={item.id}
-                                            className={`hover:bg-gray-50 ${bgColor} transition-colors`}
-                                        >
-                                            {/* Edit Icon Column */}
-                                            <td className="px-4 py-2 text-sm text-center">
-                                                <button
-                                                    onClick={() => setEditingStockId(item.id)}
-                                                    className="text-blue-600 hover:text-blue-800 transition cursor-pointer"
-                                                    title="Click to edit"
-                                                >
-                                                    <Edit size={16} />
-                                                </button>
-                                            </td>
-                                            <td className="px-4 py-3 text-sm text-gray-900">
-                                                {item.internal_item_name}
-                                            </td>
-                                            <td className="px-4 py-3 text-sm text-gray-700 font-mono">
-                                                {item.part_number}
-                                            </td>
-                                            <td className="px-4 py-3 text-sm">
-                                                <div className="flex items-center gap-2">
-                                                    <div className="relative flex-1">
-                                                        <input
-                                                            type="text"
-                                                            value={localCustomerItems[item.id] || ''}
-                                                            onFocus={() => {
-                                                                setOpenDropdowns(prev => ({ ...prev, [item.id]: true }));
-                                                                loadSuggestions(item.id);
-                                                            }}
-                                                            onChange={(e) => {
-                                                                const value = e.target.value;
-                                                                setLocalCustomerItems(prev => ({
-                                                                    ...prev,
-                                                                    [item.id]: value
-                                                                }));
-                                                                handleSearchChange(item.id, value);
-                                                            }}
-                                                            placeholder="Select or type customer item"
-                                                            className={`w-full min-w-[220px] px-2 py-1 border rounded text-sm font-medium transition-colors ${bgColor} ${hasCustomerItem
-                                                                ? 'border-green-300 text-green-700 pr-14'
-                                                                : 'border-gray-300 text-gray-600 pr-7'  // Gray border for unmapped
-                                                                }`}
-                                                        />
-                                                        {/* Clear button (X) for mapped items */}
-                                                        {hasCustomerItem && (
+                                                {/* Col 2: Part Number - Fixed w-32, Tooltip */}
+                                                <td className="px-4 py-3 text-sm text-gray-700 font-mono truncate" title={item.part_number}>
+                                                    {item.part_number}
+                                                </td>
+
+                                                {/* Col 3: Customer Item - Fixed w-48 */}
+                                                <td className="px-4 py-3 text-sm">
+                                                    <div className="flex items-center gap-2">
+                                                        <div className="relative flex-1">
+                                                            <input
+                                                                type="text"
+                                                                value={localCustomerItems[item.id] || ''}
+                                                                onFocus={() => {
+                                                                    setOpenDropdowns(prev => ({ ...prev, [item.id]: true }));
+                                                                    loadSuggestions(item.id);
+                                                                }}
+                                                                onChange={(e) => {
+                                                                    const value = e.target.value;
+                                                                    setLocalCustomerItems(prev => ({
+                                                                        ...prev,
+                                                                        [item.id]: value
+                                                                    }));
+                                                                    handleSearchChange(item.id, value);
+                                                                }}
+                                                                placeholder={hasCustomerItem ? "" : "Select Item..."}
+                                                                className={`w-full px-2 py-1 border rounded text-xs font-medium transition-colors truncate block ${hasCustomerItem
+                                                                    ? 'border-green-500 bg-green-50 text-green-700 pr-14'
+                                                                    : 'border-amber-400 border-dashed bg-white text-gray-600 pr-7'
+                                                                    }`}
+                                                            />
+
+                                                            {/* Clear button (X) for mapped items */}
+                                                            {hasCustomerItem && (
+                                                                <button
+                                                                    onClick={() => handleClearCustomerItem(item)}
+                                                                    className="absolute right-7 top-1/2 transform -translate-y-1/2 text-red-500 hover:text-red-700 transition-colors z-10"
+                                                                    type="button"
+                                                                    title="Clear customer item mapping"
+                                                                >
+                                                                    <X size={12} className="stroke-[2.5]" />
+                                                                </button>
+                                                            )}
+                                                            {/* Dropdown toggle */}
                                                             <button
-                                                                onClick={() => handleClearCustomerItem(item)}
-                                                                className="absolute right-7 top-1/2 transform -translate-y-1/2 text-red-500 hover:text-red-700 transition-colors"
+                                                                onClick={() => setOpenDropdowns(prev => ({ ...prev, [item.id]: !prev[item.id] }))}
+                                                                className="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
                                                                 type="button"
-                                                                title="Clear customer item mapping"
                                                             >
-                                                                <X size={16} className="stroke-[2.5]" />
+                                                                <ChevronDown size={14} className={`transition-transform ${openDropdowns[item.id] ? 'rotate-180' : ''}`} />
                                                             </button>
-                                                        )}
-                                                        {/* Dropdown toggle */}
-                                                        <button
-                                                            onClick={() => setOpenDropdowns(prev => ({ ...prev, [item.id]: !prev[item.id] }))}
-                                                            className="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                                                            type="button"
-                                                        >
-                                                            <ChevronDown size={14} className={`transition-transform ${openDropdowns[item.id] ? 'rotate-180' : ''}`} />
-                                                        </button>
 
-                                                        {/* Dropdown */}
-                                                        {openDropdowns[item.id] && (
-                                                            <div className="absolute z-20 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-xl max-h-72 overflow-y-auto">
-                                                                {loadingSuggestions[item.id] ? (
-                                                                    <div className="p-4 text-center text-gray-500 text-sm">
-                                                                        Loading suggestions...
-                                                                    </div>
-                                                                ) : getDropdownOptions(item.id).length === 0 ? (
-                                                                    <div className="p-4 text-center text-gray-500 text-sm">
-                                                                        No matches found. Type to search...
-                                                                    </div>
-                                                                ) : (
-                                                                    getDropdownOptions(item.id).map((vendorItem) => (
-                                                                        <button
-                                                                            key={vendorItem.id}
-                                                                            onClick={() => handleSelectVendorItem(item, vendorItem)}
-                                                                            className="w-full px-4 py-3 text-left hover:bg-blue-50 border-b last:border-b-0 transition"
-                                                                        >
-                                                                            <div className="flex justify-between items-start">
-                                                                                <div className="flex-1">
-                                                                                    <p className="font-medium text-gray-900 text-sm">{vendorItem.description}</p>
-                                                                                    {vendorItem.part_number && (
-                                                                                        <p className="text-xs text-gray-500 mt-1">Part: {vendorItem.part_number}</p>
-                                                                                    )}
+                                                            {/* Dropdown */}
+                                                            {openDropdowns[item.id] && (
+                                                                <div className="absolute z-20 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-xl max-h-72 overflow-y-auto">
+                                                                    {loadingSuggestions[item.id] ? (
+                                                                        <div className="p-4 text-center text-gray-500 text-sm">
+                                                                            Loading suggestions...
+                                                                        </div>
+                                                                    ) : getDropdownOptions(item.id).length === 0 ? (
+                                                                        <div className="p-4 text-center text-gray-500 text-sm">
+                                                                            No matches found. Type to search...
+                                                                        </div>
+                                                                    ) : (
+                                                                        getDropdownOptions(item.id).map((vendorItem) => (
+                                                                            <button
+                                                                                key={vendorItem.id}
+                                                                                onClick={() => handleSelectVendorItem(item, vendorItem)}
+                                                                                className="w-full px-4 py-3 text-left hover:bg-blue-50 border-b last:border-b-0 transition"
+                                                                            >
+                                                                                <div className="flex justify-between items-start">
+                                                                                    <div className="flex-1">
+                                                                                        <p className="font-medium text-gray-900 text-sm">{vendorItem.description}</p>
+                                                                                        {vendorItem.part_number && (
+                                                                                            <p className="text-xs text-gray-500 mt-1">Part: {vendorItem.part_number}</p>
+                                                                                        )}
+                                                                                    </div>
                                                                                 </div>
-                                                                            </div>
-                                                                        </button>
-                                                                    ))
-                                                                )}
-                                                            </div>
-                                                        )}
+                                                                            </button>
+                                                                        ))
+                                                                    )}
+                                                                </div>
+                                                            )}
+                                                        </div>
                                                     </div>
-                                                </div>
-                                            </td>
-                                            <td className="px-4 py-3 text-sm">
-                                                <select
-                                                    value={item.priority || ''}
-                                                    onChange={(e) => handleFieldUpdate(item.id, 'priority', e.target.value)}
-                                                    disabled={savingFields[`${item.id}-priority`]}
-                                                    className="w-20 px-2 py-1 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-wait"
-                                                >
-                                                    <option value="">-</option>
-                                                    <option value="P0">P0</option>
-                                                    <option value="P1">P1</option>
-                                                    <option value="P2">P2</option>
-                                                    <option value="P3">P3</option>
-                                                </select>
-                                            </td>
-                                            <td className="px-4 py-3 text-sm min-w-[140px]">
-                                                {getStatusBadge(item.status || 'In Stock')}
-                                            </td>
-                                            <td className="px-4 py-2 text-sm">
-                                                {editingStockId === item.id ? (
-                                                    <input
-                                                        type="number"
-                                                        value={item.reorder_point}
-                                                        onChange={(e) =>
-                                                            handleFieldUpdate(item.id, 'reorder_point', parseInt(e.target.value, 10) || 0)
-                                                        }
-                                                        disabled={savingFields[`${item.id}-reorder_point`]}
-                                                        className="w-16 px-2 py-1 border border-blue-300 rounded focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-wait"
-                                                        min="0"
-                                                        step="1"
+                                                </td>
+
+                                                {/* Col 4: Priority - Fixed w-16, Center Aligned */}
+                                                <td className="px-2 py-3 text-sm text-center">
+                                                    <select
+                                                        value={item.priority || ''}
+                                                        onChange={(e) => handleFieldUpdate(item.id, 'priority', e.target.value)}
+                                                        disabled={savingFields[`${item.id}-priority`]}
+                                                        className="w-full px-1 py-1 border border-gray-300 rounded text-xs text-center focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-wait"
+                                                    >
+                                                        <option value="">-</option>
+                                                        <option value="P0">P0</option>
+                                                        <option value="P1">P1</option>
+                                                        <option value="P2">P2</option>
+                                                        <option value="P3">P3</option>
+                                                    </select>
+                                                </td>
+
+                                                {/* Col 5: Status - Fixed w-24, Reduced Badge Font */}
+                                                <td className="px-4 py-3 text-sm">
+                                                    <div className="inline-flex">
+                                                        {(() => {
+                                                            const status = item.status || 'In Stock';
+                                                            const colors = {
+                                                                'In Stock': 'bg-green-100 text-green-800',
+                                                                'Low Stock': 'bg-orange-100 text-orange-800',
+                                                                'Out of Stock': 'bg-red-100 text-red-800',
+                                                            };
+                                                            return (
+                                                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${colors[status as keyof typeof colors] || 'bg-gray-100 text-gray-800'}`}>
+                                                                    {status}
+                                                                </span>
+                                                            );
+                                                        })()}
+                                                    </div>
+                                                </td>
+
+                                                {/* Col 6: Opening (Old Stock) - Fixed w-20, Gray Background */}
+                                                <td className="px-2 py-3 text-sm text-right bg-gray-50">
+                                                    <SmartEditableCell
+                                                        value={item.old_stock || 0}
+                                                        itemId={item.id}
+                                                        field="old_stock"
+                                                        onSave={handleSmartCellSave}
+                                                        isEditing={editingStockId === item.id}
+                                                        onEditStart={() => setEditingStockId(item.id)}
+                                                        onEditEnd={() => setEditingStockId(null)}
+                                                        min={0}
+                                                        step={1}
                                                     />
-                                                ) : (
-                                                    <span className="text-gray-900">{item.reorder_point}</span>
-                                                )}
-                                            </td>
-                                            <td className="px-4 py-2 text-sm">
-                                                {editingStockId === item.id ? (
-                                                    <input
-                                                        type="number"
-                                                        value={item.old_stock ?? ''}
-                                                        onChange={(e) =>
-                                                            handleFieldUpdate(item.id, 'old_stock', e.target.value === '' ? 0 : parseInt(e.target.value, 10) || 0)
-                                                        }
-                                                        disabled={savingFields[`${item.id}-old_stock`]}
-                                                        className="w-16 px-2 py-1 border border-blue-300 rounded focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-wait"
-                                                        min="0"
-                                                        step="1"
-                                                    />
-                                                ) : (
-                                                    <span className="text-gray-900">{item.old_stock || 0}</span>
-                                                )}
-                                            </td>
-                                            <td className="px-4 py-3 text-sm">
-                                                <div className="flex flex-col">
-                                                    <span className="font-semibold text-gray-900">
-                                                        {((item.current_stock || 0) + (item.old_stock || 0)).toFixed(2)}
+                                                </td>
+
+                                                {/* Col 7: Purchased (In) - Fixed w-20, Green Up Arrow */}
+                                                <td className="px-2 py-3 text-sm text-right">
+                                                    <span className="text-green-700 font-medium">
+                                                        {Math.round(item.total_in)} ↑
                                                     </span>
-                                                    <span className="text-xs text-gray-500">
-                                                        {item.total_in.toFixed(2)} in | {item.total_out.toFixed(2)} out
+                                                </td>
+
+                                                {/* Col 8: Sold (Out) - Fixed w-20, Amber/Orange Down Arrow */}
+                                                <td className="px-2 py-3 text-sm text-right">
+                                                    <span className="text-amber-700 font-semibold">
+                                                        {Math.round(item.total_out)} ↓
                                                     </span>
-                                                </div>
-                                            </td>
-                                            <td className="px-4 py-3 text-sm">
-                                                ₹{item.vendor_rate?.toFixed(2) || '0.00'}
-                                            </td>
-                                            <td className="px-4 py-3 text-sm font-semibold text-gray-900">
-                                                ₹{item.total_value.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                                            </td>
-                                            <td className="px-4 py-2 text-sm">
-                                                <button
-                                                    className="text-blue-600 hover:text-blue-800 hover:underline"
-                                                    onClick={() => {
-                                                        setSelectedPartHistory({
-                                                            partNumber: item.part_number,
-                                                            itemName: item.internal_item_name
-                                                        });
-                                                        setShowHistoryModal(true);
-                                                    }}
-                                                >
-                                                    View History
-                                                </button>
-                                            </td>
-                                        </tr>
-                                    );
-                                })}
+                                                </td>
+
+                                                {/* Col 9: Stock On Hand (Result) - Fixed w-24, Extra Large Bold, INTEGER ONLY, Red if Negative */}
+                                                <td className="px-2 py-3 text-right">
+                                                    <span className={`text-xl font-black ${Math.round((item.current_stock || 0) + (item.old_stock || 0)) < 0
+                                                        ? 'text-red-600'
+                                                        : 'text-gray-900'
+                                                        }`}>
+                                                        {Math.round((item.current_stock || 0) + (item.old_stock || 0))}
+                                                    </span>
+                                                </td>
+
+                                                {/* Col 10: Total Value - Two-line display with vendor rate */}
+                                                <td className="px-2 py-3 text-sm text-right">
+                                                    <div className="flex flex-col">
+                                                        <span className="text-sm text-gray-700">
+                                                            ₹{item.total_value.toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                                                        </span>
+                                                        {item.latest_vendor_rate && Math.round((item.current_stock || 0) + (item.old_stock || 0)) > 0 ? (
+                                                            <span className="text-xs text-gray-400 block">
+                                                                (@ ₹{item.latest_vendor_rate.toLocaleString('en-IN')} / unit)
+                                                            </span>
+                                                        ) : null}
+                                                    </div>
+                                                </td>
+
+                                                {/* Col 11: History - Larger, more visible */}
+                                                <td className="px-2 py-2 text-sm text-center">
+                                                    <button
+                                                        className="text-blue-600 hover:text-blue-800 hover:underline text-sm font-medium"
+                                                        onClick={() => {
+                                                            setSelectedPartHistory({
+                                                                partNumber: item.part_number,
+                                                                itemName: item.internal_item_name
+                                                            });
+                                                            setShowHistoryModal(true);
+                                                        }}
+                                                        title="View transaction history"
+                                                    >
+                                                        History
+                                                    </button>
+                                                </td>
+
+                                                {/* Col 12: Delete Mapping - Only show if mapped */}
+                                                <td className="px-2 py-2 text-sm text-center">
+                                                    {item.customer_items ? (
+                                                        <button
+                                                            onClick={() => handleDeleteMapping(item)}
+                                                            className="text-red-600 hover:text-red-800 disabled:opacity-50"
+                                                            title="Delete mapping"
+                                                        >
+                                                            <Trash2 size={16} />
+                                                        </button>
+                                                    ) : null}
+                                                </td>
+                                            </tr>
+                                        );
+                                    })}
                             </tbody>
                         </table>
                     </div>
@@ -848,6 +1138,10 @@ const CurrentStockPage: React.FC = () => {
                     onClose={() => {
                         setShowHistoryModal(false);
                         setSelectedPartHistory(null);
+                    }}
+                    onStockUpdated={async () => {
+                        // Refresh stock data after transaction edit/delete
+                        await loadData();
                     }}
                 />
             )}
@@ -1028,12 +1322,16 @@ interface TransactionHistoryModalProps {
     partNumber: string;
     itemName: string;
     onClose: () => void;
+    onStockUpdated: () => void;  // Callback to refresh stock levels after edit/delete
 }
 
-const TransactionHistoryModal: React.FC<TransactionHistoryModalProps> = ({ partNumber, itemName, onClose }) => {
+const TransactionHistoryModal: React.FC<TransactionHistoryModalProps> = ({ partNumber, itemName, onClose, onStockUpdated }) => {
     const [transactions, setTransactions] = useState<StockTransaction[]>([]);
-    const [summary, setSummary] = useState({ total_in: 0, total_out: 0, transaction_count: 0 });
+    const [summary, setSummary] = useState({ total_in: 0, total_out: 0, transaction_count: 0, old_stock: null as number | null });
     const [loading, setLoading] = useState(true);
+    const [editingCells, setEditingCells] = useState<Set<string>>(new Set());
+    const [savingCells, setSavingCells] = useState<Set<string>>(new Set());
+    const [deletingId, setDeletingId] = useState<string | null>(null);
 
     useEffect(() => {
         const loadHistory = async () => {
@@ -1041,7 +1339,12 @@ const TransactionHistoryModal: React.FC<TransactionHistoryModalProps> = ({ partN
                 setLoading(true);
                 const data = await getStockHistory(partNumber);
                 setTransactions(data.transactions);
-                setSummary(data.summary);
+                setSummary({
+                    total_in: data.summary.total_in,
+                    total_out: data.summary.total_out,
+                    transaction_count: data.summary.transaction_count,
+                    old_stock: data.summary.old_stock ?? null
+                });
             } catch (error) {
                 console.error('Error loading transaction history:', error);
                 alert('Failed to load transaction history');
@@ -1052,6 +1355,87 @@ const TransactionHistoryModal: React.FC<TransactionHistoryModalProps> = ({ partN
 
         loadHistory();
     }, [partNumber]);
+
+    // Reload data and notify parent
+    const reloadHistory = async () => {
+        try {
+            const data = await getStockHistory(partNumber);
+            setTransactions(data.transactions);
+            setSummary({
+                total_in: data.summary.total_in,
+                total_out: data.summary.total_out,
+                transaction_count: data.summary.transaction_count,
+                old_stock: data.summary.old_stock ?? null
+            });
+            onStockUpdated();  // Notify parent to refresh stock levels
+        } catch (error) {
+            console.error('Error reloading history:', error);
+        }
+    };
+
+    // Handle cell edit (QTY, RATE, AMOUNT)
+    const handleCellEdit = async (txn: StockTransaction, field: 'quantity' | 'rate' | 'amount', newValue: number) => {
+        if (!txn.id) return;
+
+        const cellId = `${txn.id}-${field}`;
+        setSavingCells(prev => new Set(prev).add(cellId));
+
+        try {
+            // Validate
+            if (newValue < 0) {
+                alert('Value must be >= 0');
+                return;
+            }
+
+            // Update via API
+            await updateStockTransaction({
+                transactionId: txn.id,
+                type: txn.type,
+                quantity: field === 'quantity' ? newValue : txn.quantity,
+                rate: field === 'rate' ? newValue : (txn.rate ?? undefined)
+            });
+
+            // Reload data
+            await reloadHistory();
+        } catch (error: any) {
+            console.error('Error updating transaction:', error);
+            alert(error.response?.data?.detail || 'Failed to update transaction');
+        } finally {
+            setSavingCells(prev => {
+                const newSet = new Set(prev);
+                newSet.delete(cellId);
+                return newSet;
+            });
+        }
+    };
+
+    // Handle delete transaction
+    const handleDelete = async (txn: StockTransaction) => {
+        if (!txn.id) return;
+
+        const confirmed = window.confirm(
+            'Delete this transaction? This cannot be undone.\n\nStock levels will be recalculated automatically.'
+        );
+
+        if (!confirmed) return;
+
+        setDeletingId(txn.id);
+
+        try {
+            await deleteStockTransaction({
+                transactionId: txn.id,
+                type: txn.type
+            });
+
+            // Reload data
+            await reloadHistory();
+        } catch (error: any) {
+            console.error('Error deleting transaction:', error);
+            alert(error.response?.data?.detail || 'Failed to delete transaction');
+        } finally {
+            setDeletingId(null);
+        }
+    };
 
     return (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
@@ -1073,7 +1457,11 @@ const TransactionHistoryModal: React.FC<TransactionHistoryModalProps> = ({ partN
                 </div>
 
                 {/* Summary Cards */}
-                <div className="grid grid-cols-3 gap-4 p-6 border-b border-gray-200 bg-gray-50">
+                <div className="grid grid-cols-4 gap-4 p-6 border-b border-gray-200 bg-gray-50">
+                    <div className="text-center">
+                        <p className="text-sm text-gray-600">Old Stock</p>
+                        <p className="text-2xl font-bold text-blue-600">{summary.old_stock ?? '-'}</p>
+                    </div>
                     <div className="text-center">
                         <p className="text-sm text-gray-600">Total IN</p>
                         <p className="text-2xl font-bold text-green-600">{summary.total_in.toFixed(2)}</p>
@@ -1106,54 +1494,107 @@ const TransactionHistoryModal: React.FC<TransactionHistoryModalProps> = ({ partN
                                     <th className="px-4 py-3 text-right text-xs font-medium text-gray-600 uppercase">Rate</th>
                                     <th className="px-4 py-3 text-right text-xs font-medium text-gray-600 uppercase">Amount</th>
                                     <th className="px-4 py-3 text-center text-xs font-medium text-gray-600 uppercase">Receipt</th>
+                                    <th className="px-4 py-3 text-center text-xs font-medium text-gray-600 uppercase">Actions</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-gray-200">
-                                {transactions.map((txn, index) => (
-                                    <tr key={index} className="hover:bg-gray-50">
-                                        <td className="px-4 py-3 text-sm">
-                                            <span className={`px-2 py-1 rounded text-xs font-semibold ${txn.type === 'IN'
-                                                ? 'bg-green-100 text-green-800'
-                                                : 'bg-red-100 text-red-800'
-                                                }`}>
-                                                {txn.type}
-                                            </span>
-                                        </td>
-                                        <td className="px-4 py-3 text-sm text-gray-700">
-                                            {txn.date || 'N/A'}
-                                        </td>
-                                        <td className="px-4 py-3 text-sm text-gray-700 font-mono">
-                                            {txn.invoice_number || 'N/A'}
-                                        </td>
-                                        <td className="px-4 py-3 text-sm text-gray-900">
-                                            {txn.description}
-                                        </td>
-                                        <td className="px-4 py-3 text-sm text-right font-semibold text-gray-900">
-                                            {txn.quantity.toFixed(2)}
-                                        </td>
-                                        <td className="px-4 py-3 text-sm text-right text-gray-700">
-                                            {txn.rate ? `₹${txn.rate.toFixed(2)}` : 'N/A'}
-                                        </td>
-                                        <td className="px-4 py-3 text-sm text-right font-semibold text-gray-900">
-                                            ₹{txn.amount.toFixed(2)}
-                                        </td>
-                                        <td className="px-4 py-3 text-sm text-center">
-                                            {txn.receipt_link ? (
-                                                <a
-                                                    href={txn.receipt_link}
-                                                    target="_blank"
-                                                    rel="noopener noreferrer"
-                                                    className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800 hover:underline"
+                                {transactions.map((txn, index) => {
+                                    const isSaving = savingCells.has(`${txn.id}-quantity`) || savingCells.has(`${txn.id}-rate`);
+                                    const isDeleting = deletingId === txn.id;
+
+                                    return (
+                                        <tr key={txn.id || index} className={`hover:bg-gray-50 ${isDeleting ? 'opacity-50' : ''}`}>
+                                            <td className="px-4 py-3 text-sm">
+                                                <span className={`px-2 py-1 rounded text-xs font-semibold ${txn.type === 'IN'
+                                                    ? 'bg-green-100 text-green-800'
+                                                    : 'bg-red-100 text-red-800'
+                                                    }`}>
+                                                    {txn.type}
+                                                </span>
+                                            </td>
+                                            <td className="px-4 py-3 text-sm text-gray-700">
+                                                {txn.date || 'N/A'}
+                                            </td>
+                                            <td className="px-4 py-3 text-sm text-gray-700 font-mono">
+                                                {txn.invoice_number || 'N/A'}
+                                            </td>
+                                            <td className="px-4 py-3 text-sm text-gray-900">
+                                                {txn.description}
+                                            </td>
+                                            {/* Editable QTY Cell */}
+                                            <td className="px-4 py-3 text-sm text-right">
+                                                <input
+                                                    type="number"
+                                                    defaultValue={txn.quantity}
+                                                    onBlur={(e) => {
+                                                        const newVal = parseFloat(e.target.value);
+                                                        if (newVal !== txn.quantity && !isNaN(newVal)) {
+                                                            handleCellEdit(txn, 'quantity', newVal);
+                                                        }
+                                                    }}
+                                                    disabled={isSaving || isDeleting}
+                                                    className={`w-20 px-2 py-1 border rounded text-right font-semibold transition-colors ${savingCells.has(`${txn.id}-quantity`) ? 'border-blue-500 bg-blue-50' : 'border-gray-300'
+                                                        } focus:bg-yellow-50 focus:border-yellow-500 hover:border-gray-400`}
+                                                    step="0.01"
+                                                    min="0"
+                                                />
+                                            </td>
+                                            {/* Editable RATE Cell */}
+                                            <td className="px-4 py-3 text-sm text-right">
+                                                <input
+                                                    type="number"
+                                                    defaultValue={txn.rate ?? ''}
+                                                    placeholder="N/A"
+                                                    onBlur={(e) => {
+                                                        const newVal = parseFloat(e.target.value);
+                                                        if (newVal !== txn.rate && !isNaN(newVal)) {
+                                                            handleCellEdit(txn, 'rate', newVal);
+                                                        }
+                                                    }}
+                                                    disabled={isSaving || isDeleting}
+                                                    className={`w-24 px-2 py-1 border rounded text-right transition-colors ${savingCells.has(`${txn.id}-rate`) ? 'border-blue-500 bg-blue-50' : 'border-gray-300'
+                                                        } focus:bg-yellow-50 focus:border-yellow-500 hover:border-gray-400`}
+                                                    step="0.01"
+                                                    min="0"
+                                                />
+                                            </td>
+                                            {/* Calculated AMOUNT Cell (read-only) */}
+                                            <td className="px-4 py-3 text-sm text-right font-semibold text-gray-900">
+                                                ₹{txn.amount.toFixed(2)}
+                                            </td>
+                                            <td className="px-4 py-3 text-sm text-center">
+                                                {txn.receipt_link ? (
+                                                    <a
+                                                        href={txn.receipt_link}
+                                                        target="_blank"
+                                                        rel="noopener noreferrer"
+                                                        className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800 hover:underline"
+                                                    >
+                                                        View
+                                                        <ExternalLink size={14} />
+                                                    </a>
+                                                ) : (
+                                                    <span className="text-gray-400">N/A</span>
+                                                )}
+                                            </td>
+                                            {/* Delete Button */}
+                                            <td className="px-4 py-3 text-sm text-center">
+                                                <button
+                                                    onClick={() => handleDelete(txn)}
+                                                    disabled={isSaving || isDeleting}
+                                                    className="text-red-600 hover:text-red-800 disabled:opacity-50 disabled:cursor-not-allowed"
+                                                    title="Delete transaction"
                                                 >
-                                                    View
-                                                    <ExternalLink size={14} />
-                                                </a>
-                                            ) : (
-                                                <span className="text-gray-400">N/A</span>
-                                            )}
-                                        </td>
-                                    </tr>
-                                ))}
+                                                    {isDeleting ? (
+                                                        <RefreshCw size={16} className="animate-spin" />
+                                                    ) : (
+                                                        <Trash2 size={16} />
+                                                    )}
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    )
+                                })}
                             </tbody>
                         </table>
                     )}

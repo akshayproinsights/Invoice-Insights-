@@ -360,20 +360,20 @@ async def get_file_url(
     r2_bucket: str = Depends(get_current_user_r2_bucket)
 ):
     """
-    Generate a presigned URL to view a file from R2 storage
+    Get permanent public URL for a file from R2 storage
     """
     try:
         storage = get_storage_client()
-        client = storage.get_client()
         
-        # Generate presigned URL (7 days expiry)
-        url = client.generate_presigned_url(
-            'get_object',
-            Params={'Bucket': r2_bucket, 'Key': file_key},
-            ExpiresIn=604800  # 7 days
-        )
+        # Generate permanent public URL
+        url = storage.get_public_url(r2_bucket, file_key)
+        
+        if not url:
+            raise HTTPException(status_code=500, detail="Public URL not configured for R2 bucket")
         
         return {"url": url}
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Failed to generate presigned URL for {file_key}: {e}")
+        logger.error(f"Failed to generate public URL for {file_key}: {e}")
         raise HTTPException(status_code=500, detail="Failed to generate file URL")

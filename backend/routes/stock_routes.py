@@ -47,6 +47,19 @@ class StockUpdateRequest(BaseModel):
     priority: Optional[str] = None
 
 
+class TransactionUpdate(BaseModel):
+    """Update transaction quantities/rates"""
+    type: str  # "IN" or "OUT"
+    quantity: float
+    rate: Optional[float] = None
+    amount: Optional[float] = None
+
+
+class TransactionDelete(BaseModel):
+    """Delete transaction"""
+    type: str  # "IN" or "OUT"
+
+
 def normalize_part_number(part_number: str) -> str:
     """Normalize part number for matching (remove spaces, lowercase)"""
     if not part_number:
@@ -245,9 +258,9 @@ async def get_stock_history(
     db = get_database_client()
     
     try:
-        # Get vendor transactions (IN)
+        # Get vendor transactions (IN) - include ID for editing
         vendor_items = db.client.table("inventory_items")\
-            .select("part_number, description, qty, rate, invoice_date, invoice_number, receipt_link")\
+            .select("id, part_number, description, qty, rate, invoice_date, invoice_number, receipt_link")\
             .eq("username", username)\
             .execute()
         
@@ -259,6 +272,7 @@ async def get_stock_history(
             item_part = item.get("part_number", "")
             if fuzzy_match_part_numbers(part_number, item_part, threshold=90):
                 in_transactions.append({
+                    "id": item.get("id"),  # Include ID for editing
                     "type": "IN",
                     "date": item.get("invoice_date"),
                     "invoice_number": item.get("invoice_number"),
@@ -298,7 +312,7 @@ async def get_stock_history(
         
         while True:
             sales_batch = db.client.table("verified_invoices")\
-                .select("description, quantity, rate, date, receipt_number, receipt_link, type")\
+                .select("id, description, quantity, rate, date, receipt_number, receipt_link, type")\
                 .eq("username", username)\
                 .limit(batch_size)\
                 .offset(current_offset)\
@@ -342,6 +356,7 @@ async def get_stock_history(
                 if similarity >= 90:
                     # Add this transaction (allow duplicates with same description but different dates/quantities)
                     out_transactions.append({
+                        "id": item.get("id"),  # Include ID for editing
                         "type": "OUT",
                         "date": item.get("date"),
                         "invoice_number": item.get("receipt_number"),
@@ -358,6 +373,17 @@ async def get_stock_history(
         all_transactions = in_transactions + out_transactions
         all_transactions.sort(key=lambda x: x.get("date") or "", reverse=True)
         
+        # Get old stock from stock_levels table
+        old_stock = None
+        stock_level = db.client.table("stock_levels")\
+            .select("old_stock")\
+            .eq("username", username)\
+            .eq("part_number", part_number)\
+            .execute()
+        
+        if stock_level.data and len(stock_level.data) > 0:
+            old_stock = stock_level.data[0].get("old_stock")
+        
         logger.info(f"Found {len(in_transactions)} IN and {len(out_transactions)} OUT transactions for {part_number}")
         
         return {
@@ -367,13 +393,177 @@ async def get_stock_history(
             "summary": {
                 "total_in": sum(t["quantity"] for t in in_transactions),
                 "total_out": sum(t["quantity"] for t in out_transactions),
-                "transaction_count": len(all_transactions)
+                "transaction_count": len(all_transactions),
+                "old_stock": old_stock
             }
         }
         
     except Exception as e:
         logger.error(f"Error getting stock history: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/transaction/{transaction_id}")
+async def update_transaction(
+    transaction_id: str,
+    updates: TransactionUpdate,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Update a transaction (IN or OUT) and recalculate stock levels.
+    """
+    username = current_user.get("username")
+    db = get_database_client()
+    
+    try:
+        # Validate inputs
+        if updates.quantity < 0:
+            raise HTTPException(status_code=400, detail="Quantity must be >= 0")
+        if updates.rate is not None and updates.rate < 0:
+            raise HTTPException(status_code=400, detail="Rate must be >= 0")
+        
+        # Update appropriate table based on type
+        if updates.type == "IN":
+            # Update inventory_items table
+            update_data = {"qty": updates.quantity}
+            if updates.rate is not None:
+                update_data["rate"] = updates.rate
+            
+            response = db.client.table("inventory_items")\
+                .update(update_data)\
+                .eq("id", transaction_id)\
+                .eq("username", username)\
+                .execute()
+            
+            if not response.data:
+                raise HTTPException(status_code=404, detail="Transaction not found")
+            
+            logger.info(f"Updated IN transaction #{transaction_id}: qty={updates.quantity}, rate={updates.rate}")
+            
+        elif updates.type == "OUT":
+            # Update verified_invoices table
+            update_data = {"quantity": updates.quantity}
+            if updates.rate is not None:
+                update_data["rate"] = updates.rate
+            
+            response = db.client.table("verified_invoices")\
+                .update(update_data)\
+                .eq("id", transaction_id)\
+                .eq("username", username)\
+                .execute()
+            
+            if not response.data:
+                raise HTTPException(status_code=404, detail="Transaction not found")
+            
+            logger.info(f"Updated OUT transaction #{transaction_id}: qty={updates.quantity}, rate={updates.rate}")
+        else:
+            raise HTTPException(status_code=400, detail="Invalid transaction type. Must be 'IN' or 'OUT'")
+        
+        # Trigger stock recalculation
+        recalculate_stock_for_user(username)
+        
+        return {
+            "success": True,
+            "message": "Transaction updated and stock levels recalculated"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating transaction: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/transaction/{transaction_id}")
+async def delete_transaction(
+    transaction_id: str,
+    delete_request: TransactionDelete,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Delete a transaction (IN or OUT) and recalculate stock levels.
+    """
+    username = current_user.get("username")
+    db = get_database_client()
+    
+    try:
+        # Delete from appropriate table based on type
+        if delete_request.type == "IN":
+            # Delete from inventory_items table
+            response = db.client.table("inventory_items")\
+                .delete()\
+                .eq("id", transaction_id)\
+                .eq("username", username)\
+                .execute()
+            
+            if not response.data:
+                raise HTTPException(status_code=404, detail="Transaction not found")
+            
+            logger.info(f"Deleted IN transaction #{transaction_id}")
+            
+        elif delete_request.type == "OUT":
+            # Delete from verified_invoices table
+            response = db.client.table("verified_invoices")\
+                .delete()\
+                .eq("id", transaction_id)\
+                .eq("username", username)\
+                .execute()
+            
+            if not response.data:
+                raise HTTPException(status_code=404, detail="Transaction not found")
+            
+            logger.info(f"Deleted OUT transaction #{transaction_id}")
+        else:
+            raise HTTPException(status_code=400, detail="Invalid transaction type. Must be 'IN' or 'OUT'")
+        
+        # Trigger stock recalculation
+        recalculate_stock_for_user(username)
+        
+        return {
+            "success": True,
+            "message": "Transaction deleted and stock levels recalculated"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting transaction: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/mapping/{part_number}")
+async def delete_vendor_mapping(
+    part_number: str,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Delete vendor mapping for a part number.
+    Removes from vendor_mapping_sheets and triggers stock recalculation.
+    """
+    username = current_user.get("username")
+    db = get_database_client()
+    
+    try:
+        # Delete from vendor_mapping_sheets
+        result = db.client.table("vendor_mapping_sheets")\
+            .delete()\
+            .eq("username", username)\
+            .eq("part_number", part_number)\
+            .execute()
+        
+        logger.info(f"Deleted mapping for {part_number} (username: {username}, deleted {len(result.data)} rows)")
+        
+        # Trigger stock recalculation
+        recalculate_stock_for_user(username)
+        
+        return {
+            "success": True,
+            "message": f"Mapping deleted for {part_number}"
+        }
+    except Exception as e:
+        logger.error(f"Error deleting mapping: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @router.post("/calculate")
@@ -597,11 +787,6 @@ def recalculate_stock_for_user(username: str):
     
     for part, data in stock_by_part.items():
         current_stock = data["total_in"] - data["total_out"]
-        unit_value = data.get("vendor_rate") or 0
-        total_value = current_stock * unit_value
-        
-        # Create a comma-separated string of customer items (or None if no mappings)
-        customer_items_str = ", ".join(data.get("customer_items", [])) if data.get("customer_items") else None
         
         # Check if this item has existing manual edits to preserve
         lookup_key = (part, data["internal_item_name"])
@@ -611,6 +796,16 @@ def recalculate_stock_for_user(username: str):
         reorder_point = preserved.get("reorder_point") if preserved.get("reorder_point") is not None else data["reorder_point"]
         old_stock = preserved.get("old_stock") if preserved.get("old_stock") is not None else None
         priority = preserved.get("priority")
+        
+        # Calculate ACTUAL ON HAND (including old_stock for value calculation)
+        stock_on_hand = current_stock + (old_stock or 0)
+        
+        # Calculate value using ON HAND (not just current_stock)
+        unit_value = data.get("vendor_rate") or 0
+        total_value = stock_on_hand * unit_value
+        
+        # Create a comma-separated string of customer items (or None if no mappings)
+        customer_items_str = ", ".join(data.get("customer_items", [])) if data.get("customer_items") else None
         
         stock_records.append({
             "username": username,
@@ -627,7 +822,7 @@ def recalculate_stock_for_user(username: str):
             "vendor_rate": data.get("vendor_rate"),
             "customer_rate": data.get("customer_rate"),
             "unit_value": unit_value,
-            "total_value": round(total_value, 2),
+            "total_value": round(total_value, 2),  # Now includes old_stock
             "last_vendor_invoice_date": data.get("last_vendor_invoice_date"),
             "last_customer_invoice_date": data.get("last_customer_invoice_date"),
             "updated_at": now

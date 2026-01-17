@@ -27,7 +27,7 @@ export interface VendorMappingEntry {
     stock?: number | null;
     reorder?: number | null;
     notes?: string | null;
-    status: 'Pending' | 'Skip';
+    status: 'Pending' | 'Skip' | 'Mark as Done';
     source_image_url?: string;
     extracted_at?: string;
     created_at?: string;

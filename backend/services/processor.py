@@ -885,17 +885,19 @@ def process_invoices_batch(
                     logger.info(f"Deleting old duplicate for hash {image_hash[:16]}...")
                     delete_invoice_by_hash(image_hash, username)
             
-            # Generate presigned URL
+            
+            # Generate permanent public URL
+            logger.info(f"📸 DEBUG: About to generate public URL for file_key: {file_key}")
+            logger.info(f"   - R2 bucket: {r2_bucket}")
             try:
-                client = storage.get_client()
-                receipt_link = client.generate_presigned_url(
-                    'get_object',
-                    Params={'Bucket': r2_bucket, 'Key': file_key},
-                    ExpiresIn=604800  # 7 days
-                )
-                logger.info(f"Generated presigned URL for {file_key}")
+                receipt_link = storage.get_public_url(r2_bucket, file_key)
+                if not receipt_link:
+                    logger.warning(f"⚠️ DEBUG: Public URL not configured, falling back to R2 path for {file_key}")
+                    receipt_link = f"r2://{r2_bucket}/{file_key}"
+                else:
+                    logger.info(f"✅ DEBUG: Generated permanent public URL: {receipt_link}")
             except Exception as e:
-                logger.error(f"Failed to generate presigned URL for {file_key}: {e}")
+                logger.error(f"❌ DEBUG: Failed to generate public URL for {file_key}: {e}")
                 receipt_link = f"r2://{r2_bucket}/{file_key}"
             
             # Update progress - automated processing
