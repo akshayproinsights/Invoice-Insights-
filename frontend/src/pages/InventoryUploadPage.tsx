@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { inventoryAPI } from '../services/inventoryApi';
 import { useQueryClient } from '@tanstack/react-query';
 import DuplicateWarningModal from '../components/DuplicateWarningModal';
+import ImagePreviewModal from '../components/ImagePreviewModal';
 
 const InventoryUploadPage: React.FC = () => {
     const navigate = useNavigate();
@@ -32,6 +33,10 @@ const InventoryUploadPage: React.FC = () => {
     const [uploadedFiles, setUploadedFiles] = useState<string[]>([]);
     const queryClient = useQueryClient();
 
+    // Image preview modal state
+    const [previewModalOpen, setPreviewModalOpen] = useState(false);
+    const [previewIndex, setPreviewIndex] = useState(0);
+
     // Resume monitoring on page load if there's an active task
     useEffect(() => {
         // First check if there's a saved completion status
@@ -40,10 +45,11 @@ const InventoryUploadPage: React.FC = () => {
             try {
                 const completionData = JSON.parse(savedCompletion);
                 setProcessingStatus(completionData);
-                setIsProcessing(true);
+                setIsProcessing(false); // ✓ Not processing anymore - completed
                 setIsUploading(false);
+                setFiles([]); // ✓ Clear files since we're done
                 console.log('📦 Restored inventory completion status');
-                return;
+                return; // Don't poll if already completed
             } catch (e) {
                 console.error('Error parsing inventory completion:', e);
                 localStorage.removeItem('inventoryCompletionStatus');
@@ -212,6 +218,34 @@ const InventoryUploadPage: React.FC = () => {
 
     const removeFile = (index: number) => {
         setFiles((prev) => prev.filter((_, i) => i !== index));
+    };
+
+    // Preview modal handlers
+    const handleOpenPreview = (index: number) => {
+        setPreviewIndex(index);
+        setPreviewModalOpen(true);
+    };
+
+    const handleClosePreview = () => {
+        setPreviewModalOpen(false);
+    };
+
+    const handleDeleteFromPreview = (index: number) => {
+        setFiles((prev) => prev.filter((_, i) => i !== index));
+
+        // Adjust preview index after deletion
+        if (files.length === 1) {
+            // Last file deleted - close modal
+            setPreviewModalOpen(false);
+        } else if (index === files.length - 1) {
+            // Deleted last file - show previous
+            setPreviewIndex(Math.max(0, index - 1));
+        }
+        // If deleting middle file, current index now points to next file automatically
+    };
+
+    const handleNavigatePreview = (newIndex: number) => {
+        setPreviewIndex(newIndex);
     };
 
     const handleUploadAndProcess = async (forceUpload: boolean = false) => {
@@ -514,7 +548,7 @@ const InventoryUploadPage: React.FC = () => {
             </div>
 
             {/* Two-Column Layout: Image Preview (Left) + Processing Status (Right) */}
-            {(files.length > 0 || isProcessing) && (
+            {(files.length > 0 || isProcessing || processingStatus?.status === 'completed') && (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                     {/* LEFT COLUMN: Image Preview & Upload Button - Hide if no files (resume case) */}
                     {files.length > 0 ? (
@@ -529,7 +563,8 @@ const InventoryUploadPage: React.FC = () => {
                                     {files.map((file, index) => (
                                         <div
                                             key={index}
-                                            className="relative group aspect-square bg-white border-2 border-gray-200 rounded-lg overflow-hidden hover:border-blue-400 transition-all shadow-sm hover:shadow-md"
+                                            className="relative group aspect-square bg-white border-2 border-gray-200 rounded-lg overflow-hidden hover:border-blue-400 transition-all shadow-sm hover:shadow-md cursor-pointer"
+                                            onClick={() => handleOpenPreview(index)}
                                         >
                                             {/* Image Preview */}
                                             <img
@@ -549,7 +584,10 @@ const InventoryUploadPage: React.FC = () => {
 
                                             {/* Remove button */}
                                             <button
-                                                onClick={() => removeFile(index)}
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    removeFile(index);
+                                                }}
                                                 className="absolute top-0.5 right-0.5 bg-red-500 hover:bg-red-600 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
                                                 disabled={isUploading || isProcessing}
                                                 title="Remove"
@@ -609,6 +647,24 @@ const InventoryUploadPage: React.FC = () => {
                                             : 'Upload & Process'}
                                 </button>
                             )}
+                        </div>
+                    ) : processingStatus?.status === 'completed' ? (
+                        // NEW: Completion summary on left side when returning to completed upload
+                        <div className="bg-gradient-to-br from-green-50 to-emerald-50 rounded-xl shadow-sm border-2 border-green-200 p-6 flex items-center justify-center min-h-[300px]">
+                            <div className="text-center">
+                                <div className="mx-auto mb-4 w-20 h-20 rounded-full bg-green-100 flex items-center justify-center">
+                                    <CheckCircle className="text-green-600" size={40} />
+                                </div>
+                                <p className="text-lg font-bold text-green-900 mb-2">
+                                    Upload Successful! ✓
+                                </p>
+                                <p className="text-sm text-green-700 mb-1">
+                                    {processingStatus.progress?.processed || 0} purchase bill(s) processed
+                                </p>
+                                <p className="text-xs text-green-600">
+                                    {processingStatus.message}
+                                </p>
+                            </div>
                         </div>
                     ) : (
                         // When resuming with no files, show a placeholder
@@ -691,10 +747,18 @@ const InventoryUploadPage: React.FC = () => {
                                 </div>
 
                                 {processingStatus.status === 'completed' && (
-                                    <div className="mt-3 p-3 bg-green-50 border border-green-200 rounded-lg">
-                                        <p className="text-xs font-medium text-green-800 mb-2">
-                                            ✓ Processing complete! Verify the extracted data.
-                                        </p>
+                                    <div className="mt-3 p-4 bg-green-50 border-2 border-green-200 rounded-lg">
+                                        <div className="flex items-start gap-3 mb-3">
+                                            <CheckCircle className="text-green-600 mt-0.5" size={20} />
+                                            <div>
+                                                <p className="text-sm font-semibold text-green-900 mb-1">
+                                                    Processing Complete!
+                                                </p>
+                                                <p className="text-xs text-green-700">
+                                                    {processingStatus.message || 'All files have been processed successfully'}
+                                                </p>
+                                            </div>
+                                        </div>
                                         <button
                                             onClick={() => {
                                                 setFiles([]);
@@ -702,10 +766,20 @@ const InventoryUploadPage: React.FC = () => {
                                                 localStorage.removeItem('inventoryCompletionStatus');
                                                 navigate('/inventory/verify');
                                             }}
-                                            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-3 rounded-lg transition flex items-center justify-center gap-2 text-sm"
+                                            className="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-2.5 px-4 rounded-lg transition flex items-center justify-center gap-2 shadow-sm"
                                         >
-                                            <CheckCircle size={16} />
-                                            Verify All Purchases
+                                            <CheckCircle size={18} />
+                                            Verify All Purchases →
+                                        </button>
+                                        <button
+                                            onClick={() => {
+                                                setFiles([]);
+                                                setProcessingStatus(null);
+                                                localStorage.removeItem('inventoryCompletionStatus');
+                                            }}
+                                            className="w-full mt-2 bg-white hover:bg-gray-50 text-gray-700 font-medium py-2 px-4 rounded-lg transition border border-gray-300 text-sm"
+                                        >
+                                            Upload More Files
                                         </button>
                                     </div>
                                 )}
@@ -738,6 +812,16 @@ const InventoryUploadPage: React.FC = () => {
                 totalDuplicates={duplicateQueue.length}
                 onUploadAnyway={handleUploadAnyway}
                 onSkip={handleSkipDuplicate}
+            />
+
+            {/* Image Preview Modal */}
+            <ImagePreviewModal
+                isOpen={previewModalOpen}
+                files={files}
+                currentIndex={previewIndex}
+                onClose={handleClosePreview}
+                onDelete={handleDeleteFromPreview}
+                onNavigate={handleNavigatePreview}
             />
         </div>
     );

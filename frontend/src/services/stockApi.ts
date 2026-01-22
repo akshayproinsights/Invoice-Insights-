@@ -87,6 +87,9 @@ export const getStockLevels = async (params?: {
     if (params?.status_filter) queryParams.append('status_filter', params.status_filter);
     if (params?.priority_filter) queryParams.append('priority_filter', params.priority_filter);
 
+    // Add cache-busting timestamp to ensure fresh data
+    queryParams.append('_t', Date.now().toString());
+
     const response = await apiClient.get(`/api/stock/levels?${queryParams.toString()}`);
     return response.data;
 };

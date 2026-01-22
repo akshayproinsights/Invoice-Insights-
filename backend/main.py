@@ -9,13 +9,42 @@ import logging
 import config
 
 # Configure logging
+import sys
+
+# Create console handler with explicit flushing
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setLevel(logging.INFO)
+
+# Set format
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+console_handler.setFormatter(formatter)
+
+# Configure root logger
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[console_handler],
+    force=True  # Force reconfiguration even if logging was already configured
 )
+
+# Force flush after each log
+class FlushingHandler(logging.StreamHandler):
+    def emit(self, record):
+        super().emit(record)
+        self.flush()
+
+# Replace with flushing handler
+root_logger = logging.getLogger()
+root_logger.handlers.clear()
+flushing_handler = FlushingHandler(sys.stdout)
+flushing_handler.setFormatter(formatter)
+flushing_handler.setLevel(logging.INFO)
+root_logger.addHandler(flushing_handler)
+root_logger.setLevel(logging.INFO)
 
 # Suppress httpx INFO logs (too verbose - thousands of Supabase API calls)
 logging.getLogger('httpx').setLevel(logging.WARNING)
+
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +62,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"],  # Allow browser to read this header for file downloads
 )
 
 # Import routers

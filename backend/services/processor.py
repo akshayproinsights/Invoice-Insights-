@@ -295,6 +295,9 @@ def process_single_invoice(
             tmp_path = tmp.name
         
         img = Image.open(tmp_path)
+        print(f"\n{'='*80}", flush=True)
+        print(f">>> PROCESSING IMAGE: {filename}", flush=True)
+        print(f"{'='*80}\n", flush=True)
         logger.info(f"Processing image: {filename}")
         
         # Try with primary model (Flash) first
@@ -315,15 +318,18 @@ def process_single_invoice(
             
             # Log model being attempted
             if model_name == FALLBACK_MODEL:
-                logger.info(f"🔄 Starting Pro model attempt after Flash fallback: {fallback_reason}")
+                print(f"[FALLBACK] Starting Pro model attempt after Flash fallback: {fallback_reason}", flush=True)
+                logger.info(f"Starting Pro model attempt after Flash fallback: {fallback_reason}")
             else:
-                logger.info(f"🚀 Starting Flash model attempt")
+                print(f"[AI] Starting Flash model attempt", flush=True)
+                logger.info(f"Starting Flash model attempt")
             
             # Generate content with retry logic (full retries for each model)
             for attempt in range(MAX_RETRIES):
                 try:
                     limiter.wait()
                     
+                    print(f"[ATTEMPT {attempt + 1}/{MAX_RETRIES}] Using model: {model_name}", flush=True)
                     logger.info(f"Attempting with {model_name} (attempt {attempt + 1}/{MAX_RETRIES})")
                     
                     # Configure generation with system instruction
@@ -349,6 +355,7 @@ def process_single_invoice(
                         output_tokens = getattr(usage, 'candidates_token_count', 0)
                         total_tokens = getattr(usage, 'total_token_count', input_tokens + output_tokens)
                         
+                        print(f"[TOKENS] Input: {input_tokens}, Output: {output_tokens}, Total: {total_tokens}", flush=True)
                         logger.info(f"Token usage - Input: {input_tokens}, Output: {output_tokens}, Total: {total_tokens}")
                     
                     # Extract JSON from response
@@ -384,6 +391,7 @@ def process_single_invoice(
                     # Calculate accuracy from item confidences
                     accuracy = calculate_accuracy(data.get("items", []))
                     
+                    print(f"[ACCURACY] Model {model_name}: {accuracy:.2f}%", flush=True)
                     logger.info(f"Model {model_name} - Accuracy: {accuracy:.2f}%")
                     
                     # Check for critical field confidence (Date & Receipt Number)
@@ -476,7 +484,9 @@ def process_single_invoice(
                     data["fallback_reason"] = fallback_reason if fallback_attempted else None
                     data["processing_errors"] = " | ".join(processing_errors) if processing_errors else None
                     
-                    logger.info(f"✓ Successfully processed: {filename} | Model: {model_name} | Accuracy: {accuracy:.2f}% | Cost: ₹{cost_inr:.4f}")
+                    print(f"\n[SUCCESS] Processed: {filename}", flush=True)
+                    print(f"          Model: {model_name} | Accuracy: {accuracy:.2f}% | Cost: Rs.{cost_inr:.4f}\n", flush=True)
+                    logger.info(f"Successfully processed: {filename} | Model: {model_name} | Accuracy: {accuracy:.2f}% | Cost: Rs.{cost_inr:.4f}")
                     if fallback_attempted:
                         logger.info(f"  ℹ️ Fallback was used: {fallback_reason}")
                     
@@ -529,7 +539,8 @@ def process_single_invoice(
             os.unlink(tmp_path)
     
     # If we got here, both models failed completely
-    logger.error(f"❌ Complete failure: Both Flash and Pro models failed for {filename}")
+    print(f"\n[ERROR] Processing failed for {filename}\n", flush=True)
+    logger.error(f"Complete failure: Both Flash and Pro models failed for {filename}")
     logger.error(f"   Errors: {' | '.join(processing_errors)}")
     return None
 
@@ -838,6 +849,13 @@ def process_invoices_batch(
         "duplicates": []  # Track detected duplicates
     }
     
+    print(f"\n{'='*80}", flush=True)
+    print(f"BATCH PROCESSING STARTED", flush=True)
+    print(f"Total files: {len(file_keys)}", flush=True)
+    print(f"Username: {username}", flush=True)
+    print(f"Force upload: {force_upload}", flush=True)
+    print(f"{'='*80}\n", flush=True)
+    
     all_rows = []
     results_lock = threading.Lock()
     
@@ -849,6 +867,7 @@ def process_invoices_batch(
                 progress_callback(file_index, len(file_keys), f"Downloading {file_key}")
             
             # Download from R2
+            print(f"\n[{file_index + 1}/{len(file_keys)}] Downloading: {file_key}", flush=True)
             logger.info(f"[{file_index + 1}/{len(file_keys)}] Downloading: {file_key}")
             image_bytes = storage.download_file(r2_bucket, file_key)
             
@@ -860,6 +879,7 @@ def process_invoices_batch(
             
             # Calculate image hash (needed for database storage)
             image_hash = calculate_image_hash(image_bytes)
+            print(f"[HASH] {image_hash[:16]}...", flush=True)
             logger.info(f"Calculated hash for {file_key}: {image_hash[:16]}...")
             
             # If force_upload is enabled, delete old duplicate before processing
@@ -886,6 +906,7 @@ def process_invoices_batch(
                 progress_callback(file_index, len(file_keys), f"Automated processing: {file_key}")
             
             # Process with automated system (with user-specific prompt)
+            print(f"[AI PROCESSING] {file_key}", flush=True)
             invoice_data = process_single_invoice(image_bytes, file_key, receipt_link, username)
             
             if invoice_data:

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useOutletContext, useSearchParams } from 'react-router-dom';
-import { Search, TrendingUp, AlertTriangle, XCircle, RefreshCw, ExternalLink, X, Package, ChevronDown, FileDown, Upload, Check, Trash2 } from 'lucide-react';
+import { Search, TrendingUp, TrendingDown, AlertTriangle, RefreshCw, ExternalLink, X, Package, ChevronDown, FileDown, Upload, Check, Trash2 } from 'lucide-react';
 import {
     getStockLevels,
     getStockSummary,
@@ -238,6 +238,13 @@ const CurrentStockPage: React.FC = () => {
         return () => document.removeEventListener('mousedown', handleClickOutside);
     }, []);
 
+    // Clear session flag when navigating away - allows sorting on next visit
+    useEffect(() => {
+        return () => {
+            sessionStorage.removeItem('stock_page_loaded');
+        };
+    }, []);
+
     // Set header actions (Upload and Export buttons)
     useEffect(() => {
         setHeaderActions(
@@ -284,9 +291,16 @@ const CurrentStockPage: React.FC = () => {
                 getStockSummary(),
             ]);
 
-            // Only sort if there are NO active edits AND no mapping in progress (preserve order during editing)
+            // Only sort on FIRST page load (when navigating from another page)
+            // Don't sort during: edits, recalculations, refreshes, or mapping
             let sortedItems = [...itemsData.items];
-            if (activeEditCells.size === 0 && !isMappingInProgress) {
+
+            // Check if this is the first load in this session
+            const sessionKey = 'stock_page_loaded';
+            const hasLoadedBefore = sessionStorage.getItem(sessionKey);
+
+            if (!hasLoadedBefore) {
+                // First load - sort items
                 sortedItems = sortedItems.sort((a, b) => {
                     const aHasCustomer = !!a.customer_items;
                     const bHasCustomer = !!b.customer_items;
@@ -299,7 +313,11 @@ const CurrentStockPage: React.FC = () => {
                     const bName = b.customer_items || b.internal_item_name || '';
                     return aName.localeCompare(bName);
                 });
+
+                // Mark as loaded for this session
+                sessionStorage.setItem(sessionKey, 'true');
             }
+            // On subsequent loads in same session: preserve order (no sorting)
 
             // Set default reorder_point to 2 if not set
             sortedItems.forEach(item => {
@@ -567,6 +585,45 @@ const CurrentStockPage: React.FC = () => {
         }
     };
 
+    // Handle blur event on customer item input - auto-save typed text
+    const handleCustomerItemBlur = async (item: StockLevel) => {
+        const typedValue = localCustomerItems[item.id] || '';
+        const originalValue = item.customer_items || '';
+
+        // Close dropdown when blurring
+        setTimeout(() => {
+            setOpenDropdowns(prev => ({ ...prev, [item.id]: false }));
+        }, 200); // Small delay to allow dropdown click to register
+
+        // Only save if value has changed and not empty
+        if (typedValue && typedValue !== originalValue) {
+            try {
+                // Save to vendor_mapping_entries
+                await apiClient.post('/api/vendor-mapping/entries/bulk-save', {
+                    entries: [{
+                        row_number: 1,
+                        vendor_description: item.internal_item_name,
+                        part_number: item.part_number,
+                        customer_item_name: typedValue,
+                        status: 'Added'
+                    }]
+                });
+
+                // Flash green to indicate save
+                setFlashGreen(prev => ({ ...prev, [item.id]: true }));
+                setTimeout(() => {
+                    setFlashGreen(prev => ({ ...prev, [item.id]: false }));
+                }, 2000);
+
+                console.log(`Auto-saved customer item: ${typedValue} for ${item.part_number}`);
+            } catch (error) {
+                console.error('Error auto-saving customer item:', error);
+                // Silently fail - don't bother user with error messages
+            }
+        }
+    };
+
+
     // Get dropdown options (suggestions or search results)
     const getDropdownOptions = (itemId: number): VendorItem[] => {
         const query = searchQueries[itemId] || '';
@@ -605,11 +662,20 @@ const CurrentStockPage: React.FC = () => {
             alert(
                 `✅ ${response.message}\n\n` +
                 `Extracted ${response.extracted_rows} rows\n` +
-                `Status: ${response.status}`
+                `Status: ${response.status}\n\n` +
+                `Refreshing stock data...`
             );
 
-            // Refresh stock data to show merged items
+            // Wait for backend recalculation to complete before refreshing
+            // The backend triggers stock recalculation which may take a moment
+            await new Promise(resolve => setTimeout(resolve, 1000));
+
+            // Force a complete refresh of stock data
             await loadData();
+
+            // Also refresh the summary to show updated counts
+            const summaryData = await getStockSummary();
+            setSummary(summaryData);
 
         } catch (error: any) {
             console.error('Upload error:', error);
@@ -639,7 +705,7 @@ const CurrentStockPage: React.FC = () => {
             const url = window.URL.createObjectURL(blob);
             const link = document.createElement('a');
             link.href = url;
-            link.setAttribute('download', `unmapped_stock_items_${new Date().toISOString().split('T')[0]}.pdf`);
+            link.download = `unmapped_stock_items_${new Date().toISOString().split('T')[0]}.pdf`;  // Use direct property instead of setAttribute
             document.body.appendChild(link);
             link.click();
             link.remove();
@@ -689,7 +755,7 @@ const CurrentStockPage: React.FC = () => {
                         <div>
                             <p className="text-sm text-gray-600">Total Stock Value</p>
                             <p className="text-3xl font-bold text-gray-900 mt-2">
-                                ₹{summary.total_stock_value.toLocaleString('en-IN')}
+                                ₹{Math.round(summary.total_stock_value).toLocaleString('en-IN')}
                             </p>
                         </div>
                         <div className="p-3 bg-blue-100 rounded-lg">
@@ -721,21 +787,30 @@ const CurrentStockPage: React.FC = () => {
                             </p>
                         </div>
                         <div className="p-3 bg-orange-100 rounded-lg">
-                            <AlertTriangle className="text-orange-600" size={24} />
+                            <TrendingDown className="text-orange-600" size={24} />
                         </div>
                     </div>
                 </div>
 
                 <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
                     <div className="flex items-center justify-between">
-                        <div>
-                            <p className="text-sm text-gray-600">Out of Stock</p>
-                            <p className="text-3xl font-bold text-red-600 mt-2">
-                                {summary.out_of_stock}
+                        <div className="flex-1">
+                            <p className="text-sm text-gray-600">Items to Map</p>
+                            <p className="text-3xl font-bold text-orange-600 mt-2">
+                                {pendingSetupCount}
                             </p>
+                            <button
+                                onClick={() => {
+                                    setShowMappedItems(false);
+                                    setSetupModeFilter(true);
+                                }}
+                                className="mt-3 px-4 py-1.5 bg-orange-500 text-white text-sm font-semibold rounded-md hover:bg-orange-600 transition-colors"
+                            >
+                                Action Needed
+                            </button>
                         </div>
-                        <div className="p-3 bg-red-100 rounded-lg">
-                            <XCircle className="text-red-600" size={24} />
+                        <div className="p-3 bg-orange-100 rounded-lg">
+                            <AlertTriangle className="text-orange-600" size={24} />
                         </div>
                     </div>
                 </div>
@@ -830,47 +905,47 @@ const CurrentStockPage: React.FC = () => {
                     </div>
                 ) : (
                     <div className="overflow-x-auto">
-                        <table className="w-full table-fixed">
+                        <table className="w-full table-auto">
                             <thead className="bg-gray-50 border-b border-gray-200">
                                 <tr>
-                                    {/* Col 1: Internal Item Name - Fluid (w-auto) */}
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">
-                                        Internal Item Name
+                                    {/* Col 1: Item Details (Combined Internal Item Name + Part Number) - Flexible with min-width */}
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase min-w-56">
+                                        Item Details
                                     </th>
-                                    {/* Col 2: Part Number - Fixed w-32 */}
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase w-32">
-                                        Part Number
-                                    </th>
-                                    {/* Col 3: Customer Item - Fixed w-48 */}
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase w-48">
+                                    {/* Col 2: Customer Item - Fixed w-48 */}
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase w-48 min-w-48">
                                         Customer Item
                                     </th>
-                                    {/* Col 4: Priority - Fixed w-16 (Reduced) */}
-                                    <th className="px-4 py-3 text-center text-xs font-medium text-gray-600 uppercase w-16">
+                                    {/* Col 3: Priority - Fixed w-24 (increased for dropdown visibility) */}
+                                    <th className="px-4 py-3 text-center text-xs font-medium text-gray-600 uppercase w-24">
                                         PRI
                                     </th>
-                                    {/* Col 5: Status - Fixed w-24 */}
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase w-24">
+                                    {/* Col 4: Min Stock - Fixed w-20, Gray Background, Center Aligned */}
+                                    <th className="px-4 py-3 text-center text-xs font-medium text-gray-600 uppercase w-20 bg-gray-50">
+                                        Min Stock
+                                    </th>
+                                    {/* Col 5: Status - Fixed w-36 (increased for badge readability) */}
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase w-36">
                                         Status
                                     </th>
                                     {/* Col 6: Opening (Old Stock) - Fixed w-20, Gray Background, Right Aligned */}
-                                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-600 uppercase w-20 bg-gray-50">
+                                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-600 uppercase w-20 min-w-16 bg-gray-50">
                                         Opening
                                     </th>
-                                    {/* Col 7: Purchased (In) - Fixed w-20, Right Aligned */}
-                                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-600 uppercase w-20">
+                                    {/* Col 7: Purchased (In) - Fixed w-24, Right Aligned */}
+                                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-600 uppercase w-24 min-w-20">
                                         In
                                     </th>
-                                    {/* Col 8: Sold (Out) - Fixed w-20, Right Aligned */}
-                                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-600 uppercase w-20">
+                                    {/* Col 8: Sold (Out) - Fixed w-24, Right Aligned */}
+                                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-600 uppercase w-24 min-w-20">
                                         Out
                                     </th>
                                     {/* Col 9: Stock On Hand (Result) - Fixed w-24, Right Aligned */}
-                                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-600 uppercase w-24">
+                                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-600 uppercase w-24 min-w-20">
                                         On Hand
                                     </th>
                                     {/* Col 10: Total Value - Fixed w-32, Right Aligned */}
-                                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-600 uppercase w-32">
+                                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-600 uppercase w-32 min-w-24">
                                         Value
                                     </th>
                                     {/* Col 11: History - Fixed w-20 */}
@@ -901,17 +976,21 @@ const CurrentStockPage: React.FC = () => {
                                                 key={item.id}
                                                 className="bg-white hover:bg-gray-50 transition-colors"
                                             >
-                                                {/* Col 1: Internal Item Name - Fluid, Text Wrapping */}
-                                                <td className="px-4 py-3 text-sm text-gray-900">
-                                                    <span className="whitespace-normal break-words">{item.internal_item_name}</span>
+                                                {/* Col 1: Item Details (Combined Internal Item Name + Part Number) - Two-line layout */}
+                                                <td className="px-4 py-3">
+                                                    <div className="flex flex-col gap-1">
+                                                        <span className="text-sm text-gray-900 font-medium leading-tight">
+                                                            {item.internal_item_name}
+                                                        </span>
+                                                        <span className="inline-flex items-center">
+                                                            <span className="px-2 py-0.5 bg-gray-100 text-gray-600 rounded text-xs font-mono">
+                                                                {item.part_number}
+                                                            </span>
+                                                        </span>
+                                                    </div>
                                                 </td>
 
-                                                {/* Col 2: Part Number - Fixed w-32, Tooltip */}
-                                                <td className="px-4 py-3 text-sm text-gray-700 font-mono truncate" title={item.part_number}>
-                                                    {item.part_number}
-                                                </td>
-
-                                                {/* Col 3: Customer Item - Fixed w-48 */}
+                                                {/* Col 2: Customer Item - Fixed w-48 */}
                                                 <td className="px-4 py-3 text-sm">
                                                     <div className="flex items-center gap-2">
                                                         <div className="relative flex-1">
@@ -930,6 +1009,7 @@ const CurrentStockPage: React.FC = () => {
                                                                     }));
                                                                     handleSearchChange(item.id, value);
                                                                 }}
+                                                                onBlur={() => handleCustomerItemBlur(item)}
                                                                 placeholder={hasCustomerItem ? "" : "Select Item..."}
                                                                 className={`w-full px-2 py-1 border rounded text-xs font-medium transition-colors truncate block ${hasCustomerItem
                                                                     ? 'border-green-500 bg-green-50 text-green-700 pr-14'
@@ -992,7 +1072,7 @@ const CurrentStockPage: React.FC = () => {
                                                     </div>
                                                 </td>
 
-                                                {/* Col 4: Priority - Fixed w-16, Center Aligned */}
+                                                {/* Col 3: Priority - Fixed w-24, Center Aligned */}
                                                 <td className="px-2 py-3 text-sm text-center">
                                                     <select
                                                         value={item.priority || ''}
@@ -1008,7 +1088,22 @@ const CurrentStockPage: React.FC = () => {
                                                     </select>
                                                 </td>
 
-                                                {/* Col 5: Status - Fixed w-24, Reduced Badge Font */}
+                                                {/* Col 4: Min Stock - Fixed w-20, Gray Background, Center Aligned */}
+                                                <td className="px-2 py-3 text-sm text-center bg-gray-50">
+                                                    <SmartEditableCell
+                                                        value={item.reorder_point || 0}
+                                                        itemId={item.id}
+                                                        field="reorder_point"
+                                                        onSave={handleSmartCellSave}
+                                                        isEditing={editingStockId === item.id}
+                                                        onEditStart={() => setEditingStockId(item.id)}
+                                                        onEditEnd={() => setEditingStockId(null)}
+                                                        min={0}
+                                                        step={1}
+                                                    />
+                                                </td>
+
+                                                {/* Col 5: Status - Fixed w-36, Reduced Badge Font */}
                                                 <td className="px-4 py-3 text-sm">
                                                     <div className="inline-flex">
                                                         {(() => {

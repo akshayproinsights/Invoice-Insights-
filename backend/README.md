@@ -1,6 +1,6 @@
-# Invoice Insights Hub Backend
+# DigiEntry Backend
 
-FastAPI backend for the Invoice Insights Hub application.
+FastAPI backend for the DigiEntry application.
 
 ## Setup
 

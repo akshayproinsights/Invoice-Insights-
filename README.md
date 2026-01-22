@@ -1,4 +1,4 @@
-# 📄 Invoice Insights Hub
+# 📄 DigiEntry
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/backend-FastAPI-success)
@@ -6,7 +6,7 @@
 ![Supabase](https://img.shields.io/badge/database-Supabase-3ECF8E)
 ![AI](https://img.shields.io/badge/AI-Gemini_Pro_%26_Flash-8E75B2)
 
-**Invoice Insights Hub** is an intelligent, automated invoice processing system designed to streamline data extraction, verification, and management. Leveraging Google's **Gemini AI models**, it extracts critical details from invoice images with high accuracy and provides a seamless review interface.
+**DigiEntry** is an intelligent, automated invoice processing system designed to streamline data extraction, verification, and management. Leveraging Google's **Gemini AI models**, it extracts critical details from invoice images with high accuracy and provides a seamless review interface.
 
 ---
 

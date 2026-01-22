@@ -45,6 +45,7 @@ class StockUpdateRequest(BaseModel):
     unit_value: Optional[float] = None
     old_stock: Optional[float] = None
     priority: Optional[str] = None
+    customer_items: Optional[str] = None  # Customer item name to update in vendor_mapping_entries
 
 
 class TransactionUpdate(BaseModel):
@@ -67,10 +68,10 @@ def normalize_part_number(part_number: str) -> str:
     return part_number.strip().replace(" ", "").replace("-", "").lower()
 
 
-def fuzzy_match_part_numbers(part1: str, part2: str, threshold: float = 90.0) -> bool:
+def fuzzy_match_part_numbers(part1: str, part2: str, threshold: float = 99.0) -> bool:
     """
     Check if two part numbers match with fuzzy logic.
-    Uses 90%+ similarity threshold to catch variations.
+    Uses 99%+ similarity threshold to catch variations.
     """
     norm1 = normalize_part_number(part1)
     norm2 = normalize_part_number(part2)
@@ -128,12 +129,16 @@ async def get_stock_levels(
         
         # Add computed status field
         for item in items:
-            stock = item.get("current_stock", 0)
+            # Calculate actual on-hand stock (current_stock + old_stock)
+            # This matches the frontend display logic
+            current = item.get("current_stock", 0)
+            old = item.get("old_stock", 0) or 0
+            on_hand = current + old
             reorder = item.get("reorder_point", DEFAULT_REORDER_POINT)
             
-            if stock <= 0:
+            if on_hand <= 0:
                 item["status"] = "Out of Stock"
-            elif stock < reorder:
+            elif on_hand < reorder:
                 item["status"] = "Low Stock"
             else:
                 item["status"] = "In Stock"
@@ -221,13 +226,15 @@ async def get_stock_summary(
         
         # Calculate summary stats
         total_stock_value = sum(item.get("total_value", 0) or 0 for item in items)
+        
+        # Count items using on_hand (current_stock + old_stock) vs reorder_point
         low_stock_count = sum(
             1 for item in items 
-            if 0 < item.get("current_stock", 0) < item.get("reorder_point", DEFAULT_REORDER_POINT)
+            if 0 < (item.get("current_stock", 0) + (item.get("old_stock", 0) or 0)) < item.get("reorder_point", DEFAULT_REORDER_POINT)
         )
         out_of_stock_count = sum(
             1 for item in items 
-            if item.get("current_stock", 0) <= 0
+            if (item.get("current_stock", 0) + (item.get("old_stock", 0) or 0)) <= 0
         )
         
         return {
@@ -270,7 +277,7 @@ async def get_stock_history(
         in_transactions = []
         for item in vendor_data:
             item_part = item.get("part_number", "")
-            if fuzzy_match_part_numbers(part_number, item_part, threshold=90):
+            if fuzzy_match_part_numbers(part_number, item_part, threshold=99):
                 in_transactions.append({
                     "id": item.get("id"),  # Include ID for editing
                     "type": "IN",
@@ -653,6 +660,7 @@ def recalculate_stock_for_user(username: str):
         .execute()
     
     # Build lookup dict: (part_number, internal_item_name) -> {reorder_point, old_stock, priority}
+    # NOTE: customer_items is NOT preserved here - it comes from vendor_mapping_entries
     existing_values = {}
     for stock in (existing_stock_levels.data or []):
         key = (stock.get("part_number"), stock.get("internal_item_name"))
@@ -673,9 +681,52 @@ def recalculate_stock_for_user(username: str):
             customer_to_vendor[customer_item] = vendor_part
     
     
-    # 4. Group vendor items by part number
+    # 4. Initialize stock_by_part with MAPPINGS FIRST (map once, use forever)
+    # This ensures mappings persist even when vendor invoices are deleted
     stock_by_part = {}
     
+    logger.info(f"🔷 Step 1: Initializing stock_by_part with {len(mapping_data)} mappings")
+    
+    for mapping in mapping_data:
+        part_number = mapping.get("part_number")
+        vendor_desc = mapping.get("vendor_description")
+        customer_item = mapping.get("customer_item_name")
+        
+        if not part_number or not vendor_desc:
+            continue
+        
+        # Find existing group with fuzzy match (same logic as before)
+        matched_group = None
+        for existing_part in stock_by_part.keys():
+            if fuzzy_match_part_numbers(part_number, existing_part, threshold=99):
+                matched_group = existing_part
+                break
+        
+        group_key = matched_group or part_number
+        
+        if group_key not in stock_by_part:
+            # Create entry with mapping data, zero transactional data
+            stock_by_part[group_key] = {
+                "part_number": group_key,
+                "internal_item_name": vendor_desc,
+                "vendor_description": vendor_desc,
+                "total_in": 0.0,  # Will be filled from vendor invoices
+                "total_out": 0.0,  # Will be filled from sales
+                "customer_items": [],
+                "vendor_rate": None,  # Will be filled from vendor invoices
+                "customer_rate": None,
+                "last_vendor_invoice_date": None,
+                "last_customer_invoice_date": None,
+                "reorder_point": DEFAULT_REORDER_POINT
+            }
+        
+        # Add customer item if not already in list
+        if customer_item and customer_item not in stock_by_part[group_key]["customer_items"]:
+            stock_by_part[group_key]["customer_items"].append(customer_item)
+    
+    logger.info(f"🔷 Step 2: Filling IN transactions from {len(vendor_data)} vendor invoices")
+    
+    # 5. Fill IN transactions from vendor invoices (if any exist)
     for item in vendor_data:
         part_number = item.get("part_number", "")
         internal_item_name = item.get("description", "")
@@ -683,18 +734,16 @@ def recalculate_stock_for_user(username: str):
         if not part_number:
             continue
         
-        # Normalize for grouping (original logic)
-        normalized_part = normalize_part_number(part_number)
-        
-        # Find existing group with fuzzy match (original logic)
+        # Find existing group with fuzzy match
         matched_group = None
         for existing_part in stock_by_part.keys():
-            if fuzzy_match_part_numbers(part_number, existing_part, threshold=90):
+            if fuzzy_match_part_numbers(part_number, existing_part, threshold=99):
                 matched_group = existing_part
                 break
         
-        group_key = matched_group or part_number  # Fixed: was part_num, should be part_number
+        group_key = matched_group or part_number
         
+        # If this part doesn't have a mapping, create entry from vendor invoice
         if group_key not in stock_by_part:
             stock_by_part[group_key] = {
                 "part_number": group_key,
@@ -702,15 +751,21 @@ def recalculate_stock_for_user(username: str):
                 "vendor_description": internal_item_name,
                 "total_in": 0.0,
                 "total_out": 0.0,
-                "customer_items": [],  # Changed from set() to list
-                "vendor_rate": item.get("rate"),  # Get rate from first vendor invoice
+                "customer_items": [],
+                "vendor_rate": item.get("rate"),
                 "customer_rate": None,
                 "last_vendor_invoice_date": item.get("invoice_date"),
                 "last_customer_invoice_date": None,
-                "reorder_point": DEFAULT_REORDER_POINT  # Always use default
+                "reorder_point": DEFAULT_REORDER_POINT
             }
         
+        # Fill in transactional data
         stock_by_part[group_key]["total_in"] += float(item.get("qty", 0) or 0)
+        
+        # Update vendor_description if it was created from mapping without invoice
+        if not stock_by_part[group_key].get("internal_item_name"):
+            stock_by_part[group_key]["internal_item_name"] = internal_item_name
+            stock_by_part[group_key]["vendor_description"] = internal_item_name
         
         # Update latest rate and date
         if item.get("invoice_date"):
@@ -719,10 +774,11 @@ def recalculate_stock_for_user(username: str):
                 stock_by_part[group_key]["last_vendor_invoice_date"] = item["invoice_date"]
                 stock_by_part[group_key]["vendor_rate"] = item.get("rate")
     
-    # 5. Process sales items (OUT transactions) using proper 3-table join
-    # Build a comprehensive mapping structure first
+    # 6. Build part_to_customer_items mapping ONCE (optimize from O(n²) to O(n))
     # For each part_number in stock_by_part, find customer_items via 98% fuzzy match
     part_to_customer_items = {}  # part_number -> [customer_items]
+    
+    logger.info(f"🔷 Step 3: Building part-to-customer mapping for {len(stock_by_part)} parts")
     
     for part_number in stock_by_part.keys():
         customer_items_for_part = []
@@ -739,6 +795,8 @@ def recalculate_stock_for_user(username: str):
         
         if customer_items_for_part:
             part_to_customer_items[part_number] = customer_items_for_part
+    
+    logger.info(f"🔷 Step 4: Processing {len(sales_data)} sales transactions")
     
     # Now process each sales transaction
     for item in sales_data:
@@ -781,7 +839,7 @@ def recalculate_stock_for_user(username: str):
                         stock_by_part[part_number]["customer_rate"] = item.get("rate")
 
     
-    # 6. Calculate current stock and values
+    # 7. Calculate current stock and values
     stock_records = []
     now = datetime.now().isoformat()
     
@@ -797,6 +855,10 @@ def recalculate_stock_for_user(username: str):
         old_stock = preserved.get("old_stock") if preserved.get("old_stock") is not None else None
         priority = preserved.get("priority")
         
+        # customer_items comes ONLY from vendor_mapping_entries (single source of truth)
+        # Already populated in data["customer_items"] from Step 1 (initialization with mappings)
+        customer_items_str = ", ".join(data.get("customer_items", [])) if data.get("customer_items") else None
+        
         # Calculate ACTUAL ON HAND (including old_stock for value calculation)
         stock_on_hand = current_stock + (old_stock or 0)
         
@@ -804,15 +866,12 @@ def recalculate_stock_for_user(username: str):
         unit_value = data.get("vendor_rate") or 0
         total_value = stock_on_hand * unit_value
         
-        # Create a comma-separated string of customer items (or None if no mappings)
-        customer_items_str = ", ".join(data.get("customer_items", [])) if data.get("customer_items") else None
-        
         stock_records.append({
             "username": username,
             "part_number": part,
             "internal_item_name": data["internal_item_name"],
             "vendor_description": data["vendor_description"],
-            "customer_items": customer_items_str,  # Linked Items from mapping
+            "customer_items": customer_items_str,  # PRESERVED from existing or mapping
             "current_stock": round(current_stock, 2),
             "total_in": round(data["total_in"], 2),
             "total_out": round(data["total_out"], 2),
@@ -828,7 +887,39 @@ def recalculate_stock_for_user(username: str):
             "updated_at": now
         })
     
-    # 7. Clear existing stock levels and insert new ones
+    # 8. Add orphaned items (exist in stock_levels but have no transactions)
+    # These are items uploaded from mapping sheets that haven't been purchased/sold yet
+    processed_parts = set(stock_by_part.keys())
+    
+    for existing_item in (existing_stock_levels.data or []):
+        part_num = existing_item.get("part_number")
+        internal_name = existing_item.get("internal_item_name")
+        
+        # If this part wasn't processed (no transactions), preserve it
+        if part_num and part_num not in processed_parts:
+            stock_records.append({
+                "username": username,
+                "part_number": part_num,
+                "internal_item_name": internal_name or "Unknown Item",
+                "vendor_description": existing_item.get("vendor_description") or internal_name or "Unknown Item",
+                "customer_items": existing_item.get("customer_items"),
+                "current_stock": 0,  # No transactions yet
+                "total_in": 0,
+                "total_out": 0,
+                "reorder_point": existing_item.get("reorder_point") or DEFAULT_REORDER_POINT,
+                "old_stock": existing_item.get("old_stock"),
+                "priority": existing_item.get("priority"),
+                "vendor_rate": None,
+                "customer_rate": None,
+                "unit_value": 0,
+                "total_value": 0,
+                "last_vendor_invoice_date": None,
+                "last_customer_invoice_date": None,
+                "updated_at": now
+            })
+            logger.info(f"🔄 Preserved orphaned item: {part_num} (no transactions)")
+    
+    # 9. Clear existing stock levels and insert new ones
     if stock_records:
         # Delete existing
         db.client.table("stock_levels").delete().eq("username", username).execute()
@@ -875,6 +966,55 @@ async def update_stock_level(
         
         if updates.priority is not None:
             update_data["priority"] = updates.priority
+        
+        # Handle customer_items update - goes to vendor_mapping_entries, not stock_levels
+        if updates.customer_items is not None:
+            # Get part_number and internal_item_name from stock_levels
+            stock_record = db.client.table("stock_levels")\
+                .select("part_number, internal_item_name")\
+                .eq("id", stock_id)\
+                .eq("username", username)\
+                .execute()
+            
+            if stock_record.data:
+                part_number = stock_record.data[0].get("part_number")
+                internal_item_name = stock_record.data[0].get("internal_item_name")
+                
+                # Check if mapping exists in vendor_mapping_entries
+                existing_mapping = db.client.table("vendor_mapping_entries")\
+                    .select("id")\
+                    .eq("username", username)\
+                    .eq("part_number", part_number)\
+                    .execute()
+                
+                if existing_mapping.data:
+                    # UPDATE existing mapping
+                    db.client.table("vendor_mapping_entries")\
+                        .update({
+                            "customer_item_name": updates.customer_items,
+                            "updated_at": datetime.now().isoformat()
+                        })\
+                        .eq("username", username)\
+                        .eq("part_number", part_number)\
+                        .execute()
+                    logger.info(f"Updated customer_item mapping for {part_number} → {updates.customer_items}")
+                else:
+                    # CREATE new mapping
+                    db.client.table("vendor_mapping_entries")\
+                        .insert({
+                            "username": username,
+                            "part_number": part_number,
+                            "vendor_description": internal_item_name,
+                            "customer_item_name": updates.customer_items,
+                            "status": "Added",
+                            "created_at": datetime.now().isoformat(),
+                            "updated_at": datetime.now().isoformat()
+                        })\
+                        .execute()
+                    logger.info(f"Created customer_item mapping for {part_number} → {updates.customer_items}")
+                
+                # Also update stock_levels.customer_items for immediate display
+                update_data["customer_items"] = updates.customer_items
         
         if not update_data:
             raise HTTPException(status_code=400, detail="No valid fields to update")
@@ -1086,6 +1226,14 @@ async def export_unmapped_stock_pdf(
         
         instructions = Paragraph("Fill in Customer Item, Stock, and Reorder columns by hand", styles['Normal'])
         elements.append(instructions)
+        
+        # Priority explanation for Indian SMB users
+        priority_note = Paragraph(
+            "<b>Priority Guide:</b> P0 = Most Important (order first), "
+            "P1 = High Priority, P2 = Medium Priority, P3 = Low Priority",
+            styles['Normal']
+        )
+        elements.append(priority_note)
         elements.append(Spacer(1, 0.3*inch))
         
         # Table data

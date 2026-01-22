@@ -18,8 +18,12 @@ from models.mapping_models import (
     VendorMappingSheet
 )
 from config_loader import load_user_config
-from config import get_mappings_folder
-import google.generativeai as genai
+from config import get_mappings_folder, get_google_api_key
+from google import genai
+from google.genai import types
+
+# Import recalculation function to trigger after upload
+from routes.stock_routes import recalculate_stock_for_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -36,10 +40,10 @@ async def upload_mapping_sheet(
     current_user: dict = Depends(get_current_user)
 ):
     """
-    Upload vendor mapping sheet PDF
+    Upload vendor mapping sheet PDF/Image
     - Uploads to R2: {username}/mappings/
     - Triggers Gemini extraction
-    - Stores results in vendor_mapping_sheets table
+    - Directly updates stock_levels table with extracted data
     """
     username = current_user.get("username")
     
@@ -48,23 +52,11 @@ async def upload_mapping_sheet(
         content = await file.read()
         file_hash = calculate_file_hash(content)
         
-        # 2. Check if already processed
+        # Note: No duplicate check needed - we're doing UPDATE-ONLY
+        # Re-uploading same file will just refresh the data
         db = get_database_client()
-        existing_check = db.client.table("vendor_mapping_sheets")\
-            .select("id, status")\
-            .eq("username", username)\
-            .eq("image_hash", file_hash)\
-            .execute()
         
-        if existing_check.data:
-            existing = existing_check.data[0]
-            if existing["status"] == "completed":
-                return MappingSheetUploadResponse(
-                    sheet_id=existing["id"],
-                    image_url="",
-                    status="already_processed",
-                    message="This mapping sheet has already been processed"
-                )
+        # Continue with processing (will create fresh records)
         
         # 3. Upload to R2 using dynamic path
         storage = get_storage_client()
@@ -105,28 +97,25 @@ async def upload_mapping_sheet(
             )
         
         # Configure Gemini
-        import toml
-        secrets = toml.load("secrets.toml")
-        gemini_api_key = secrets.get("gemini_api_key")
+        gemini_api_key = get_google_api_key()
         
         if not gemini_api_key:
             raise HTTPException(status_code=500, detail="Gemini API key not configured")
         
-        genai.configure(api_key=gemini_api_key)
+        client = genai.Client(api_key=gemini_api_key)
         
-        model = genai.GenerativeModel(
-            model_name="gemini-2.0-flash-exp",
-            system_instruction=system_instruction
+        # Generate extraction using new API
+        response = client.models.generate_content(
+            model="gemini-2.0-flash-exp",
+            contents=[
+                types.Part.from_bytes(data=content, mime_type=file.content_type or "image/png"),
+                system_instruction
+            ],
+            config=types.GenerateContentConfig(
+                temperature=0.1,
+                response_mime_type="application/json"
+            )
         )
-        
-        # Upload file to Gemini
-        uploaded_file = genai.upload_file(path=None, file_data=content, mime_type=file.content_type)
-        
-        # Generate extraction
-        response = model.generate_content([
-            "Extract all handwritten data from this vendor mapping sheet",
-            uploaded_file
-        ])
         
         # Parse JSON response
         response_text = response.text.strip()
@@ -139,40 +128,125 @@ async def upload_mapping_sheet(
         extracted_data = json.loads(response_text)
         logger.info(f"Extracted {len(extracted_data.get('rows', []))} rows")
         
-        # 5. Store in database
+        # 5. Process extracted data and create mappings
         rows_data = extracted_data.get("rows", [])
-        inserted_records = []
+        updated_stock_count = 0
+        created_mapping_count = 0
+        updated_mapping_count = 0
+        skipped_count = 0
         
         for row in rows_data:
-            # Prepare record
-            record = {
-                "username": username,
-                "image_url": image_url,
-                "image_hash": file_hash,
-                "part_number": row.get("part_number"),
-                "vendor_description": row.get("vendor_description"),
-                "customer_item": [row.get("customer_item")] if row.get("customer_item") else None,
-                "old_stock": row.get("stock"),
-                "reorder_point": row.get("reorder"),
-                "status": "completed",
-                "processed_at": datetime.now().isoformat(),
-                "gemini_raw_response": row
-            }
+            row_number = row.get("row_number")
+            part_number = row.get("part_number")
+            vendor_description = row.get("vendor_description")
+            customer_item = row.get("customer_item")
+            priority = row.get("priority")
+            stock = row.get("stock")
+            reorder = row.get("reorder")
             
-            # Insert
-            result = db.client.table("vendor_mapping_sheets")\
-                .insert(record)\
+            # DEBUG: Log extracted values
+            logger.info(f"🔍 Processing row: part={part_number}, customer_item={customer_item}, priority={priority}, stock={stock}, reorder={reorder}")
+            
+            if not part_number:
+                logger.warning(f"Skipping row without part_number: {row}")
+                skipped_count += 1
+                continue
+            
+            # Check if stock_levels record exists
+            existing_stock = db.client.table("stock_levels")\
+                .select("id, internal_item_name")\
+                .eq("username", username)\
+                .eq("part_number", part_number)\
                 .execute()
             
-            inserted_records.extend(result.data)
+            if existing_stock.data:
+                # A. UPDATE stock_levels with priority, old_stock, reorder_point
+                # (NOT customer_items - that comes from vendor_mapping_entries)
+                update_data = {
+                    "priority": priority,
+                    "old_stock": stock,
+                    "reorder_point": reorder,
+                    "image_hash": file_hash,
+                    "updated_at": datetime.now().isoformat()
+                }
+                
+                db.client.table("stock_levels")\
+                    .update(update_data)\
+                    .eq("username", username)\
+                    .eq("part_number", part_number)\
+                    .execute()
+                updated_stock_count += 1
+                logger.info(f"✏️ Updated stock_levels for part {part_number}")
+                
+                # B. CREATE or UPDATE vendor_mapping_entries for customer item mapping
+                if customer_item:
+                    internal_item_name = existing_stock.data[0].get("internal_item_name", vendor_description)
+                    
+                    # Check if mapping already exists
+                    existing_mapping = db.client.table("vendor_mapping_entries")\
+                        .select("id")\
+                        .eq("username", username)\
+                        .eq("part_number", part_number)\
+                        .execute()
+                    
+                    if existing_mapping.data:
+                        # UPDATE existing mapping
+                        db.client.table("vendor_mapping_entries")\
+                            .update({
+                                "row_number": row_number,
+                                "customer_item_name": customer_item,
+                                "vendor_description": internal_item_name,
+                                "status": "Added",
+                                "updated_at": datetime.now().isoformat()
+                            })\
+                            .eq("username", username)\
+                            .eq("part_number", part_number)\
+                            .execute()
+                        updated_mapping_count += 1
+                        logger.info(f"📝 Updated mapping for part {part_number} → {customer_item}")
+                    else:
+                        # CREATE new mapping
+                        db.client.table("vendor_mapping_entries")\
+                            .insert({
+                                "username": username,
+                                "row_number": row_number,
+                                "part_number": part_number,
+                                "vendor_description": internal_item_name,
+                                "customer_item_name": customer_item,
+                                "status": "Added",
+                                "created_at": datetime.now().isoformat(),
+                                "updated_at": datetime.now().isoformat()
+                            })\
+                            .execute()
+                        created_mapping_count += 1
+                        logger.info(f"✨ Created mapping for part {part_number} → {customer_item}")
+            else:
+                # SKIP - part number not found in existing stock_levels
+                skipped_count += 1
+                logger.warning(f"⚠️ Skipped part {part_number}: not found in stock_levels (extracted from image but no match)")
         
-        logger.info(f"✅ Stored {len(inserted_records)} mapping sheet rows")
+        
+        total_mappings = created_mapping_count + updated_mapping_count
+        logger.info(f"✅ Stock Updates: {updated_stock_count}, Mappings Created: {created_mapping_count}, Mappings Updated: {updated_mapping_count}, Skipped: {skipped_count}")
+        
+        # 6. Trigger stock recalculation to update all derived fields
+        # This will populate customer_items from vendor_mapping_entries
+        logger.info(f"🔄 Triggering stock recalculation to apply new values...")
+        try:
+            recalculate_stock_for_user(username)
+            logger.info(f"✅ Stock recalculation completed successfully")
+        except Exception as recalc_error:
+            logger.error(f"⚠️ Stock recalculation failed: {recalc_error}")
+            # Don't fail the upload, just log the error
+        
+        skipped_note = f", Skipped: {skipped_count}" if skipped_count > 0 else ""
+        mapping_note = f" | Mappings: {total_mappings} ({created_mapping_count} new, {updated_mapping_count} updated)" if total_mappings > 0 else ""
         
         return MappingSheetUploadResponse(
-            sheet_id=inserted_records[0]["id"] if inserted_records else "",
+            sheet_id="",
             image_url=image_url,
             status="completed",
-            message=f"Successfully extracted {len(rows_data)} rows",
+            message=f"Successfully processed {len(rows_data)} rows (Stock: {updated_stock_count}{skipped_note}){mapping_note}. Recalculated.",
             extracted_rows=len(rows_data)
         )
     
