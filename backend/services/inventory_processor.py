@@ -271,9 +271,17 @@ def convert_to_inventory_rows(
             amount_mismatch = 0.0
         
         # Build inventory row
+        # Generate unique row_id: use invoice_number if present, otherwise use image_hash + index
+        invoice_num = header.get('invoice_number', '').strip()
+        if invoice_num:
+            row_id = f"{invoice_num}_{idx}"
+        else:
+            # Fallback: Use first 12 chars of image hash + index for uniqueness
+            row_id = f"INV_{image_hash[:12]}_{idx}"
+        
         row = {
             # System columns
-            "row_id": f"{header.get('invoice_number', '')}_{idx}",
+            "row_id": row_id,
             "username": username,
             "industry_type": user_config.get("industry", ""),
             "image_hash": image_hash,  # Add image hash for duplicate detection
@@ -330,143 +338,6 @@ def convert_to_inventory_rows(
             "cgst_percent_bbox": get_bbox_json(item, "cgst_percent"),
             "sgst_percent_bbox": get_bbox_json(item, "sgst_percent"),
             "line_item_row_bbox": get_bbox_json(item, "line_item_row"),
-        }
-        
-        rows.append(row)
-    
-    return rows
-
-    header = invoice_data.get("header", {})
-    items = invoice_data.get("items", [])
-    receipt_link = invoice_data.get("receipt_link", "")
-    upload_date = invoice_data.get("upload_date", "")
-    
-    # Model metadata
-    model_used = invoice_data.get("model_used", "")
-    model_accuracy = invoice_data.get("model_accuracy", 0.0)
-    input_tokens = invoice_data.get("input_tokens", 0)
-    output_tokens = invoice_data.get("output_tokens", 0)
-    total_tokens = invoice_data.get("total_tokens", 0)
-    cost_inr = invoice_data.get("cost_inr", 0.0)
-    
-    # Get user config
-    user_config = get_user_config(username)
-    if not user_config:
-        logger.error(f"No config found for user: {username}")
-        return []
-    
-    # Normalize date
-    raw_date = header.get("date", "")
-    normalized_date = normalize_date(raw_date)
-    if normalized_date:
-        date_to_store = format_to_db(normalized_date)
-    elif raw_date and raw_date.strip():
-        date_to_store = raw_date
-    else:
-        date_to_store = None
-    
-    def safe_float(val, default=0):
-        """Safely convert to float"""
-        if val is None or val == "" or val == "N/A":
-            return default
-        try:
-            return float(val)
-        except (ValueError, TypeError):
-            return default
-    
-    def get_bbox_json(data_dict, field_name):
-        """Extract bbox and convert to JSON, or None if missing"""
-        bbox = data_dict.get(f"{field_name}_bbox")
-        if bbox and isinstance(bbox, dict):
-            return bbox
-        return None
-    
-    rows = []
-    for idx, item in enumerate(items):
-        qty = safe_float(item.get("quantity"), 1)
-        rate = safe_float(item.get("rate"), 0)
-        taxable_amount = safe_float(item.get("amount"), 0)
-        
-        # Calculate derived fields
-        disc_percent = safe_float(item.get("disc_percent"), 0)
-        cgst_percent = safe_float(item.get("cgst_percent"), 0)
-        sgst_percent = safe_float(item.get("sgst_percent"), 0)
-        
-        discounted_price = ((100 - disc_percent) * taxable_amount) / 100
-        taxed_amount = (cgst_percent + sgst_percent) * discounted_price / 100
-        net_bill = discounted_price + taxed_amount
-        
-        # Calculate amount mismatch (for printed invoices)
-        invoice_type = header.get("invoice_type", "Printed")
-        if invoice_type.lower() == "printed":
-            calc_amount = qty * rate
-            amount_mismatch = abs(calc_amount - taxable_amount)
-        else:
-            amount_mismatch = 0.0
-        
-        # Build inventory row
-        row = {
-            # System columns
-            "row_id": f"{header.get('invoice_number', '')}_{idx}",
-            "username": username,
-            "industry_type": user_config.get("industry", ""),
-            
-            # File information
-            "source_file": header.get("source_file", ""),
-            "receipt_link": receipt_link,
-            
-            # Invoice header
-            "invoice_type": invoice_type,
-            "invoice_date": date_to_store,
-            "invoice_number": header.get("invoice_number", ""),
-            
-            # Line item details
-            "part_number": item.get("part_number", "N/A"),
-            "batch": item.get("batch", "N/A"),
-            "description": item.get("description", ""),
-            "hsn": item.get("hsn", "N/A"),
-            
-            # Quantities and pricing
-            "qty": qty,
-            "rate": rate,
-            "disc_percent": disc_percent,
-            "taxable_amount": taxable_amount,
-            
-            # Tax information
-            "cgst_percent": cgst_percent,
-            "sgst_percent": sgst_percent,
-            
-            # Calculated fields
-            "discounted_price": round(discounted_price, 2),
-            "taxed_amount": round(taxed_amount, 2),
-            "net_bill": round(net_bill, 2),
-            "amount_mismatch": round(amount_mismatch, 2),
-            
-            # AI model tracking
-            "model_used": model_used,
-            "model_accuracy": model_accuracy,
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "total_tokens": total_tokens,
-            "cost_inr": cost_inr,
-            "accuracy_score": item.get("confidence", 0),
-            
-            # Bounding boxes
-            "part_number_bbox": get_bbox_json(item, "part_number"),
-            "batch_bbox": get_bbox_json(item, "batch"),
-            "description_bbox": get_bbox_json(item, "description"),
-            "hsn_bbox": get_bbox_json(item, "hsn"),
-            "qty_bbox": get_bbox_json(item, "quantity"),
-            "rate_bbox": get_bbox_json(item, "rate"),
-            "disc_percent_bbox": get_bbox_json(item, "disc_percent"),
-            "taxable_amount_bbox": get_bbox_json(item, "amount"),
-            "cgst_percent_bbox": get_bbox_json(item, "cgst_percent"),
-            "sgst_percent_bbox": get_bbox_json(item, "sgst_percent"),
-            "line_item_row_bbox": get_bbox_json(item, "line_item_row"),
-            
-            # New fields for verification
-            "upload_date": datetime.now().isoformat(),
-            "verification_status": "Done" if amount_mismatch == 0 else "Pending",
         }
         
         rows.append(row)
@@ -568,6 +439,13 @@ def process_inventory_batch(
                         existing_record = duplicate_check.data[0]
                         logger.warning(f"Duplicate detected for {file_key}: image_hash={img_hash}")
                         
+                        # Format upload date for message
+                        upload_date = existing_record.get("upload_date")
+                        if upload_date:
+                            date_msg = f"already uploaded on {upload_date}"
+                        else:
+                            date_msg = "already uploaded previously"
+                        
                         # Add to duplicates list for user decision
                         duplicates.append({
                             "file_key": file_key,
@@ -581,7 +459,7 @@ def process_inventory_batch(
                                 "part_number": existing_record.get("part_number"),
                                 "description": existing_record.get("description")
                             },
-                            "message": f"This vendor invoice was already uploaded on {existing_record.get('upload_date', 'unknown date')}"
+                            "message": f"This vendor invoice was {date_msg}"
                         })
                         
                         # Skip processing this file - let user decide

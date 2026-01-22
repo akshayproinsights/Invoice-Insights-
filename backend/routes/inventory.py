@@ -355,6 +355,9 @@ def process_inventory_sync(
             inventory_processing_status[task_id]["progress"]["failed"] = results["failed"]
             inventory_processing_status[task_id]["message"] = f"Successfully processed {results['processed']} vendor invoices"
             inventory_processing_status[task_id]["current_file"] = "All complete"
+            # ✓ Include top-level counts for frontend summary
+            inventory_processing_status[task_id]["processed"] = results["processed"]
+            inventory_processing_status[task_id]["duplicates"] = results.get("duplicates", [])
         
         inventory_processing_status[task_id]["end_time"] = datetime.now().isoformat()
         

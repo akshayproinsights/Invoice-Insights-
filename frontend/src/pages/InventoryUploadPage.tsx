@@ -29,7 +29,7 @@ const InventoryUploadPage: React.FC = () => {
     const [duplicateInfo, setDuplicateInfo] = useState<any>(null);
     const [filesToSkip, setFilesToSkip] = useState<string[]>([]);
     const [filesToForceUpload, setFilesToForceUpload] = useState<string[]>([]);
-    const [duplicateStats, setDuplicateStats] = useState<{ newFiles: number; replaced: number; skipped: number }>({ newFiles: 0, replaced: 0, skipped: 0 });
+    const [duplicateStats, setDuplicateStats] = useState<{ totalUploaded: number; replaced: number; skipped: number }>({ totalUploaded: 0, replaced: 0, skipped: 0 });
     const [uploadedFiles, setUploadedFiles] = useState<string[]>([]);
     const queryClient = useQueryClient();
 
@@ -262,6 +262,9 @@ const InventoryUploadPage: React.FC = () => {
             setUploadStartTime(Date.now());
             setEstimatedTimeRemaining(null);
 
+            // Track total files uploaded for correct summary calculation
+            setDuplicateStats({ totalUploaded: totalFiles, replaced: 0, skipped: 0 });
+
             let fileKeys: string[] = [];
             const BATCH_SIZE = 5;
             let processedCount = 0;
@@ -340,10 +343,9 @@ const InventoryUploadPage: React.FC = () => {
                     clearInterval(pollInterval);
 
                     if (status.status === 'completed') {
-                        // No duplicates - all files processed successfully
-                        const processedCount = status.progress?.processed || 0;
-                        setDuplicateStats({ newFiles: processedCount, replaced: 0, skipped: 0 });
-                        finishProcessing();
+                        // When no duplicates detected, all files are new
+                        // totalUploaded was set at upload start, just finish with current stats
+                        finishProcessing(duplicateStats);
                     } else {
                         setIsProcessing(false);
                     }
@@ -428,15 +430,19 @@ const InventoryUploadPage: React.FC = () => {
 
                     if (status.status === 'completed' || status.status === 'failed') {
                         clearInterval(pollForce);
-                        // Track replaced files count
+                        // Track replaced files count - update stats and finish
                         const replacedCount = status.progress?.processed || 0;
-                        setDuplicateStats(prev => ({ ...prev, replaced: replacedCount }));
-                        finishProcessing();
+                        setDuplicateStats(prev => {
+                            const updatedStats = { ...prev, replaced: replacedCount };
+                            // Call finishProcessing with the updated stats
+                            finishProcessing(updatedStats);
+                            return updatedStats;
+                        });
                     }
                 }, 1000);
             } else {
-                // No files to force upload, just finish
-                finishProcessing();
+                // No files to force upload, just finish - use current state
+                finishProcessing(duplicateStats);
             }
         } catch (error) {
             console.error('Error processing remaining files:', error);
@@ -444,9 +450,12 @@ const InventoryUploadPage: React.FC = () => {
         }
     };
 
-    const finishProcessing = () => {
-        // Generate summary message using tracked duplicate stats
-        const { newFiles, replaced, skipped } = duplicateStats;
+    const finishProcessing = (stats?: { totalUploaded: number; replaced: number; skipped: number }) => {
+        // Generate summary message using passed stats (or fallback to state for edge cases)
+        const { totalUploaded, replaced, skipped } = stats || duplicateStats;
+
+        // Calculate new files correctly: new = total uploaded - replaced - skipped
+        const newFiles = Math.max(0, totalUploaded - replaced - skipped);
         const totalProcessed = newFiles + replaced;
 
         let summaryMessage = '';
@@ -475,11 +484,12 @@ const InventoryUploadPage: React.FC = () => {
             task_id: '',
             status: 'completed',
             progress: {
-                total: files.length,
-                processed: totalProcessed,
+                total: totalProcessed + skipped, // Total attempted (successfully processed + skipped)
+                processed: totalProcessed, // Only successfully processed
                 failed: 0
             },
-            message: summaryMessage
+            message: summaryMessage,
+            duplicateStats: duplicateStats  // Preserve stats for display
         });
 
 
