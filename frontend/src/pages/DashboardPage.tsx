@@ -1,37 +1,31 @@
-import React, { useState, useMemo } from 'react';
-import { useAuth } from '../contexts/AuthContext';
+import React, { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { useNavigate, useOutletContext } from 'react-router-dom';
 import {
-    TrendingUp,
-    TrendingDown,
-    DollarSign,
-    AlertTriangle,
-    ClipboardList,
-    RefreshCw,
     ChevronDown,
     X,
+    Calendar,
 } from 'lucide-react';
 import {
-    ComposedChart,
+    BarChart,
     Bar,
-    Line,
     XAxis,
     YAxis,
     CartesianGrid,
     Tooltip,
     Legend,
     ResponsiveContainer,
-    PieChart,
-    Pie,
-    Cell,
 } from 'recharts';
 import { format, subDays, startOfMonth } from 'date-fns';
 import { dashboardAPI } from '../services/dashboardAPI';
 import AutocompleteInput from '../components/dashboard/AutocompleteInput';
 import InventoryCommandCenter from '../components/dashboard/InventoryCommandCenter';
+import ActionCards from '../components/dashboard/ActionCards';
+import DraftPOManager, { type DraftPOItem } from '../components/dashboard/DraftPOManager';
 
 const DashboardPage: React.FC = () => {
-    const { user } = useAuth();
+    const navigate = useNavigate();
+    const { setHeaderActions } = useOutletContext<{ setHeaderActions: (actions: React.ReactNode) => void }>();
 
     // State for filters
     const [dateRange, setDateRange] = useState<{ start: string; end: string }>(() => {
@@ -43,11 +37,17 @@ const DashboardPage: React.FC = () => {
         };
     });
     const [selectedPreset, setSelectedPreset] = useState<string>('quarter');
+    const [showCustomDatePicker, setShowCustomDatePicker] = useState(false);
+    const [customStartDate, setCustomStartDate] = useState('');
+    const [customEndDate, setCustomEndDate] = useState('');
 
     // Advanced filter state
     const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
     const [customerFilter, setCustomerFilter] = useState('');
     const [vehicleFilter, setVehicleFilter] = useState('');
+
+    // Draft PO state
+    const [draftPOItems, setDraftPOItems] = useState<Map<string, DraftPOItem>>(new Map());
     const [partNumberFilter, setPartNumberFilter] = useState('');
 
     // Fetch KPIs
@@ -63,6 +63,15 @@ const DashboardPage: React.FC = () => {
             ),
         staleTime: 30000,
     });
+
+    // Auto-refresh every 30 seconds
+    useEffect(() => {
+        const interval = setInterval(() => {
+            refetchKPIs();
+        }, 30000); // 30 seconds
+
+        return () => clearInterval(interval);
+    }, [refetchKPIs]);
 
     // Fetch daily sales volume
     const { data: dailySales, isLoading: salesLoading } = useQuery({
@@ -85,20 +94,52 @@ const DashboardPage: React.FC = () => {
         staleTime: 30000,
     });
 
-    // Handle refresh
-    const handleRefresh = () => {
-        refetchKPIs();
-    };
+    // Fetch stock summary for out of stock count
+    const { data: stockSummary } = useQuery({
+        queryKey: ['stockSummary'],
+        queryFn: () => dashboardAPI.getStockSummary(),
+        staleTime: 30000,
+    });
+
+    // Fetch pending bills count (header items from review API)
+    const { data: reviewDates } = useQuery({
+        queryKey: ['reviewDates'],
+        queryFn: async () => {
+            const response = await fetch(`${import.meta.env.VITE_API_URL}/api/review/dates`, {
+                headers: {
+                    'Authorization': `Bearer ${localStorage.getItem('auth_token')}`,
+                },
+            });
+            return response.json();
+        },
+        staleTime: 30000,
+    });
+
+    // Fetch unmapped items count - use stock levels API to match Stock Register page
+    const { data: stockLevels } = useQuery({
+        queryKey: ['stockLevels'],
+        queryFn: async () => {
+            const response = await fetch(`${import.meta.env.VITE_API_URL}/api/stock/levels`, {
+                headers: {
+                    'Authorization': `Bearer ${localStorage.getItem('auth_token')}`,
+                },
+            });
+            return response.json();
+        },
+        staleTime: 30000,
+    });
 
     // Handle date range presets
-    const setDatePreset = (preset: 'today' | 'week' | 'month' | 'quarter' | 'all') => {
+    const setDatePreset = (preset: 'week' | 'month' | 'quarter' | 'all' | 'custom') => {
         const now = new Date();
         let start: Date;
 
+        if (preset === 'custom') {
+            setShowCustomDatePicker(true);
+            return;
+        }
+
         switch (preset) {
-            case 'today':
-                start = now;
-                break;
             case 'week':
                 start = subDays(now, 7);
                 break;
@@ -121,6 +162,21 @@ const DashboardPage: React.FC = () => {
         setSelectedPreset(preset);
     };
 
+    // Apply custom date range
+    const applyCustomDateRange = () => {
+        if (customStartDate && customEndDate) {
+            setDateRange({
+                start: customStartDate,
+                end: customEndDate,
+            });
+            setSelectedPreset('custom');
+            setShowCustomDatePicker(false);
+        }
+    };
+
+    // Check if any filters are active
+    const hasActiveFilters = customerFilter || vehicleFilter || partNumberFilter;
+
     // Clear all advanced filters
     const clearAllFilters = () => {
         setCustomerFilter('');
@@ -128,8 +184,146 @@ const DashboardPage: React.FC = () => {
         setPartNumberFilter('');
     };
 
-    // Check if any filters are active
-    const hasActiveFilters = customerFilter || vehicleFilter || partNumberFilter;
+    // Get date range label for sales card
+    const getDateRangeLabel = () => {
+        switch (selectedPreset) {
+            case 'week':
+                return 'This Week';
+            case 'month':
+                return 'This Month';
+            case 'quarter':
+                return 'Last 90 Days';
+            case 'all':
+                return 'All Time';
+            case 'custom':
+                return `${format(new Date(dateRange.start), 'dd MMM')} - ${format(new Date(dateRange.end), 'dd MMM')}`;
+            default:
+                return 'This Period';
+        }
+    };
+
+    // Set header actions when filters change
+    useEffect(() => {
+        setHeaderActions(
+            <div className="flex items-center justify-end w-full gap-2">
+                {/* Date Range Buttons */}
+                <div className="flex items-center gap-1 bg-white border border-gray-200 rounded-lg p-1">
+                    <button
+                        onClick={() => setDatePreset('week')}
+                        className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${selectedPreset === 'week'
+                            ? 'bg-indigo-600 text-white'
+                            : 'text-gray-700 hover:bg-gray-100'
+                            }`}
+                    >
+                        This Week
+                    </button>
+                    <button
+                        onClick={() => setDatePreset('month')}
+                        className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${selectedPreset === 'month'
+                            ? 'bg-indigo-600 text-white'
+                            : 'text-gray-700 hover:bg-gray-100'
+                            }`}
+                    >
+                        This Month
+                    </button>
+                    <button
+                        onClick={() => setDatePreset('quarter')}
+                        className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${selectedPreset === 'quarter'
+                            ? 'bg-indigo-600 text-white'
+                            : 'text-gray-700 hover:bg-gray-100'
+                            }`}
+                    >
+                        Last 90 Days
+                    </button>
+                    <button
+                        onClick={() => setDatePreset('all')}
+                        className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${selectedPreset === 'all'
+                            ? 'bg-indigo-600 text-white'
+                            : 'text-gray-700 hover:bg-gray-100'
+                            }`}
+                    >
+                        ALL
+                    </button>
+                    <button
+                        onClick={() => setDatePreset('custom')}
+                        className={`px-3 py-1.5 rounded-md text-sm font-medium transition flex items-center gap-1 ${selectedPreset === 'custom'
+                            ? 'bg-indigo-600 text-white'
+                            : 'text-gray-700 hover:bg-gray-100'
+                            }`}
+                    >
+                        <Calendar size={16} />
+                        Custom
+                    </button>
+                </div>
+
+                {/* Advanced Filters Toggle */}
+                <button
+                    onClick={() => setShowAdvancedFilters(!showAdvancedFilters)}
+                    className="flex items-center gap-2 bg-white border border-gray-200 text-gray-700 px-3 py-1.5 rounded-lg hover:bg-gray-50 transition"
+                >
+                    <span className="text-sm font-medium">Advanced Filters</span>
+                    <ChevronDown
+                        size={16}
+                        className={`transition-transform ${showAdvancedFilters ? 'rotate-180' : ''}`}
+                    />
+                    {hasActiveFilters && (
+                        <span className="ml-1 bg-indigo-600 text-white text-xs font-semibold px-2 py-0.5 rounded-full">
+                            {[customerFilter, vehicleFilter, partNumberFilter].filter(Boolean).length}
+                        </span>
+                    )}
+                </button>
+            </div>
+        );
+    }, [selectedPreset, showAdvancedFilters, hasActiveFilters, customerFilter, vehicleFilter, partNumberFilter, setHeaderActions]);
+
+    // Draft PO handlers
+    const handleAddToDraft = (item: any) => {
+        const draftItem: DraftPOItem = {
+            part_number: item.part_number,
+            item_name: item.item_name,
+            current_stock: item.current_stock,
+            reorder_point: item.reorder_point,
+            reorder_qty: Math.max(1, item.reorder_point - item.current_stock),
+            unit_value: item.unit_value,
+            addedAt: Date.now(), // Track when item was added for sorting
+        };
+        setDraftPOItems(prev => new Map(prev).set(item.part_number, draftItem));
+    };
+
+    const handleRemoveFromDraft = (partNumber: string) => {
+        setDraftPOItems(prev => {
+            const newMap = new Map(prev);
+            newMap.delete(partNumber);
+            return newMap;
+        });
+    };
+
+    const handleUpdateDraftQty = (partNumber: string, qty: number) => {
+        setDraftPOItems(prev => {
+            const newMap = new Map(prev);
+            const item = newMap.get(partNumber);
+            if (item) {
+                newMap.set(partNumber, { ...item, reorder_qty: qty });
+            }
+            return newMap;
+        });
+    };
+
+    // Navigation handlers for Action Cards
+    const handleNavigateToReviewSales = () => {
+        navigate('/sales/review');
+    };
+
+    const handleNavigateToUnmappedItems = () => {
+        // Navigate to stock page with "To Do" filter pre-selected
+        navigate('/inventory/stock?filter=todo');
+    };
+
+    const handleNavigateToOutOfStock = () => {
+        // Navigate to stock page with Out of Stock filter
+        // Use lowercase with underscore as per the status dropdown options
+        navigate('/inventory/stock?status=out_of_stock');
+    };
 
     // Format currency with k/L notation
     const formatCurrency = (value: number) =>
@@ -149,274 +343,210 @@ const DashboardPage: React.FC = () => {
         return formatCurrency(value);
     };
 
-    // Format number
-    const formatNumber = (value: number) => Math.round(value).toLocaleString('en-IN');
+    // Prepare pie chart data
+    const pieData = revenueSummary ? [
+        { name: 'Parts Sales', value: revenueSummary.part_revenue, color: '#6366F1' },
+        { name: 'Service/Labour', value: revenueSummary.labour_revenue, color: '#F59E0B' },
+    ].filter((item) => item.value > 0) : [];
 
-    // KPI Card Component - Premium Design
-    const KPICard: React.FC<{
-        title: string;
-        value: string;
-        change: number;
-        icon: React.ElementType;
-        bgColor: string;
-        iconColor: string;
-    }> = ({ title, value, change, icon: Icon, bgColor, iconColor }) => {
-        const isPositive = change >= 0;
-
-        return (
-            <div className={`${bgColor} rounded-2xl p-6 shadow-lg hover:shadow-xl transition-all duration-300 border border-gray-100 relative overflow-hidden group`}>
-                {/* Subtle gradient overlay */}
-                <div className="absolute inset-0 bg-gradient-to-br from-white/50 to-transparent pointer-events-none"></div>
-
-                <div className="relative z-10">
-                    <div className="flex items-center justify-between mb-4">
-                        <div className={`p-3 rounded-xl ${iconColor} shadow-md group-hover:scale-110 transition-transform duration-300`}>
-                            <Icon size={24} className="text-white" />
-                        </div>
-                        <div className={`flex items-center gap-1 text-sm font-semibold px-2.5 py-1 rounded-full ${isPositive ? 'text-green-700 bg-green-50' : 'text-red-700 bg-red-50'}`}>
-                            {isPositive ? <TrendingUp size={16} /> : <TrendingDown size={16} />}
-                            {Math.abs(change).toFixed(1)}%
-                        </div>
-                    </div>
-                    <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">{title}</h3>
-                    <p className="text-3xl font-bold text-gray-900">{value}</p>
-                </div>
-            </div>
-        );
-    };
-
-    // Prepare pie chart data with external labels
-    const pieData = useMemo(() => {
-        if (!revenueSummary) return [];
-        return [
-            { name: 'Parts Sales', value: revenueSummary.part_revenue, color: '#6366F1' },
-            { name: 'Service/Labour', value: revenueSummary.labour_revenue, color: '#F59E0B' },
-        ].filter((item) => item.value > 0);
-    }, [revenueSummary]);
-
-    // Custom label for pie chart (external) with percentages
+    // Custom label for pie chart
     const renderLabel = (entry: any) => {
         const total = pieData.reduce((sum, item) => sum + item.value, 0);
         const percentage = total > 0 ? ((entry.value / total) * 100).toFixed(1) : '0';
         return `${entry.name}: ${formatCurrencyCompact(entry.value)} (${percentage}%)`;
     };
 
+    // Custom Tooltip for Sales Trend (Stacked Bar Chart)
+    const CustomSalesTrendTooltip = ({ active, payload, label }: any) => {
+        if (!active || !payload || payload.length === 0) return null;
 
+        const date = format(new Date(label), 'EEE, MMM dd');
+        const sparesRevenue = payload.find((p: any) => p.dataKey === 'parts_revenue')?.value || 0;
+        const serviceRevenue = payload.find((p: any) => p.dataKey === 'labor_revenue')?.value || 0;
+        const totalRevenue = sparesRevenue + serviceRevenue;
+        const invoiceCount = payload[0]?.payload?.volume || 0;
 
-    // Calculate pending actions count
-    const pendingActions = 0; // You can replace this with actual logic
-
-    // Calculate inventory alerts (placeholder for now)
-    const inventoryAlerts = 0;
+        return (
+            <div className="bg-white p-3 rounded-lg shadow-lg border border-gray-200">
+                <p className="font-semibold text-gray-900 mb-2">{date}</p>
+                <p className="font-bold text-lg text-gray-900">
+                    Total Revenue: ₹{totalRevenue.toLocaleString('en-IN')}
+                </p>
+                <p className="text-sm text-gray-600 mt-1">
+                    Spares: ₹{sparesRevenue.toLocaleString('en-IN')} | Service: ₹{serviceRevenue.toLocaleString('en-IN')}
+                </p>
+                <p className="text-sm text-gray-700 mt-2">
+                    📝 {invoiceCount} Invoice{invoiceCount !== 1 ? 's' : ''}
+                </p>
+            </div>
+        );
+    };
 
     return (
-        <div className="space-y-6 pb-8">
-
-            {/* Filter Controls */}
-            <div className="space-y-4">
-                {/* Date Filter Buttons & Advanced Filters */}
-                <div className="flex flex-wrap items-center gap-3">
-                    {/* Date Range Buttons */}
-                    <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-lg p-1">
-                        <button
-                            onClick={() => setDatePreset('today')}
-                            className={`px-4 py-2 rounded-md text-sm font-medium transition ${selectedPreset === 'today'
-                                ? 'bg-indigo-600 text-white'
-                                : 'text-gray-700 hover:bg-gray-100'
-                                }`}
-                        >
-                            Today
-                        </button>
-                        <button
-                            onClick={() => setDatePreset('week')}
-                            className={`px-4 py-2 rounded-md text-sm font-medium transition ${selectedPreset === 'week'
-                                ? 'bg-indigo-600 text-white'
-                                : 'text-gray-700 hover:bg-gray-100'
-                                }`}
-                        >
-                            This Week
-                        </button>
-                        <button
-                            onClick={() => setDatePreset('month')}
-                            className={`px-4 py-2 rounded-md text-sm font-medium transition ${selectedPreset === 'month'
-                                ? 'bg-indigo-600 text-white'
-                                : 'text-gray-700 hover:bg-gray-100'
-                                }`}
-                        >
-                            This Month
-                        </button>
-                        <button
-                            onClick={() => setDatePreset('quarter')}
-                            className={`px-4 py-2 rounded-md text-sm font-medium transition ${selectedPreset === 'quarter'
-                                ? 'bg-indigo-600 text-white'
-                                : 'text-gray-700 hover:bg-gray-100'
-                                }`}
-                        >
-                            Last 90 Days
-                        </button>
-                        <button
-                            onClick={() => setDatePreset('all')}
-                            className={`px-4 py-2 rounded-md text-sm font-medium transition ${selectedPreset === 'all'
-                                ? 'bg-indigo-600 text-white'
-                                : 'text-gray-700 hover:bg-gray-100'
-                                }`}
-                        >
-                            ALL
-                        </button>
+        <div className="space-y-4 pb-8">
+            {/* Advanced Filters Panel (Only shown when toggled) */}
+            {showAdvancedFilters && (
+                <div className="bg-white border border-gray-200 rounded-lg p-4">
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <AutocompleteInput
+                            value={customerFilter}
+                            onChange={setCustomerFilter}
+                            placeholder="Search customer..."
+                            label="Customer Name"
+                            getSuggestions={dashboardAPI.getCustomerSuggestions}
+                        />
+                        <AutocompleteInput
+                            value={vehicleFilter}
+                            onChange={setVehicleFilter}
+                            placeholder="Search vehicle..."
+                            label="Vehicle Number"
+                            getSuggestions={dashboardAPI.getVehicleSuggestions}
+                        />
+                        <AutocompleteInput
+                            value={partNumberFilter}
+                            onChange={setPartNumberFilter}
+                            placeholder="Search customer item..."
+                            label="Customer Item"
+                            getSuggestions={dashboardAPI.getPartSuggestions}
+                        />
                     </div>
 
-                    {/* Advanced Filters Toggle */}
-                    <button
-                        onClick={() => setShowAdvancedFilters(!showAdvancedFilters)}
-                        className="flex items-center gap-2 bg-white border border-gray-200 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-50 transition"
-                    >
-                        <span className="text-sm font-medium">Advanced Filters</span>
-                        <ChevronDown
-                            size={18}
-                            className={`transition-transform ${showAdvancedFilters ? 'rotate-180' : ''}`}
-                        />
-                        {hasActiveFilters && (
-                            <span className="ml-1 bg-indigo-600 text-white text-xs font-semibold px-2 py-0.5 rounded-full">
-                                {[customerFilter, vehicleFilter, partNumberFilter].filter(Boolean).length}
-                            </span>
-                        )}
-                    </button>
-
-                    {/* Refresh Button */}
-                    <button
-                        onClick={handleRefresh}
-                        className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition ml-auto"
-                    >
-                        <RefreshCw size={18} />
-                        <span className="text-sm font-medium">Refresh</span>
-                    </button>
+                    {/* Clear Filters Button */}
+                    {hasActiveFilters && (
+                        <div className="mt-4 flex justify-end">
+                            <button
+                                onClick={clearAllFilters}
+                                className="text-sm text-gray-600 hover:text-gray-800 font-medium"
+                            >
+                                Clear All Filters
+                            </button>
+                        </div>
+                    )}
                 </div>
+            )}
 
-                {/* Advanced Filters Panel */}
-                {showAdvancedFilters && (
-                    <div className="bg-white border border-gray-200 rounded-lg p-4">
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                            <AutocompleteInput
-                                value={customerFilter}
-                                onChange={setCustomerFilter}
-                                placeholder="Search customer..."
-                                label="Customer Name"
-                                getSuggestions={dashboardAPI.getCustomerSuggestions}
-                            />
-                            <AutocompleteInput
-                                value={vehicleFilter}
-                                onChange={setVehicleFilter}
-                                placeholder="Search vehicle..."
-                                label="Vehicle Number"
-                                getSuggestions={dashboardAPI.getVehicleSuggestions}
-                            />
-                            <AutocompleteInput
-                                value={partNumberFilter}
-                                onChange={setPartNumberFilter}
-                                placeholder="Search customer item..."
-                                label="Customer Item"
-                                getSuggestions={dashboardAPI.getPartSuggestions}
-                            />
+            {/* Active Filter Badges */}
+            {hasActiveFilters && (
+                <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-sm font-medium text-gray-600">Active Filters:</span>
+                    {customerFilter && (
+                        <span className="inline-flex items-center gap-1 bg-indigo-100 text-indigo-800 text-sm px-3 py-1 rounded-full">
+                            Customer: {customerFilter}
+                            <button
+                                onClick={() => setCustomerFilter('')}
+                                className="hover:bg-indigo-200 rounded-full p-0.5"
+                            >
+                                <X size={14} />
+                            </button>
+                        </span>
+                    )}
+                    {vehicleFilter && (
+                        <span className="inline-flex items-center gap-1 bg-indigo-100 text-indigo-800 text-sm px-3 py-1 rounded-full">
+                            Vehicle: {vehicleFilter}
+                            <button
+                                onClick={() => setVehicleFilter('')}
+                                className="hover:bg-indigo-200 rounded-full p-0.5"
+                            >
+                                <X size={14} />
+                            </button>
+                        </span>
+                    )}
+                    {partNumberFilter && (
+                        <span className="inline-flex items-center gap-1 bg-indigo-100 text-indigo-800 text-sm px-3 py-1 rounded-full">
+                            Customer Item: {partNumberFilter}
+                            <button
+                                onClick={() => setPartNumberFilter('')}
+                                className="hover:bg-indigo-200 rounded-full p-0.5"
+                            >
+                                <X size={14} />
+                            </button>
+                        </span>
+                    )}
+                </div>
+            )}
+
+            {/* Custom Date Range Modal */}
+            {showCustomDatePicker && (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                    <div className="bg-white rounded-lg shadow-xl p-6 max-w-md w-full mx-4">
+                        <div className="flex items-center justify-between mb-4">
+                            <h3 className="text-lg font-semibold text-gray-900">Select Custom Date Range</h3>
+                            <button
+                                onClick={() => setShowCustomDatePicker(false)}
+                                className="text-gray-400 hover:text-gray-600"
+                            >
+                                <X size={20} />
+                            </button>
                         </div>
 
-                        {/* Clear Filters Button */}
-                        {hasActiveFilters && (
-                            <div className="mt-4 flex justify-end">
+                        <div className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">
+                                    Start Date
+                                </label>
+                                <input
+                                    type="date"
+                                    value={customStartDate}
+                                    onChange={(e) => setCustomStartDate(e.target.value)}
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                />
+                            </div>
+
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">
+                                    End Date
+                                </label>
+                                <input
+                                    type="date"
+                                    value={customEndDate}
+                                    onChange={(e) => setCustomEndDate(e.target.value)}
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                />
+                            </div>
+
+                            <div className="flex gap-3 pt-2">
                                 <button
-                                    onClick={clearAllFilters}
-                                    className="text-sm text-gray-600 hover:text-gray-800 font-medium"
+                                    onClick={() => setShowCustomDatePicker(false)}
+                                    className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition"
                                 >
-                                    Clear All Filters
+                                    Cancel
+                                </button>
+                                <button
+                                    onClick={applyCustomDateRange}
+                                    disabled={!customStartDate || !customEndDate}
+                                    className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition disabled:bg-gray-300 disabled:cursor-not-allowed"
+                                >
+                                    Apply
                                 </button>
                             </div>
-                        )}
+                        </div>
                     </div>
-                )}
+                </div>
+            )}
 
-                {/* Active Filter Badges */}
-                {hasActiveFilters && (
-                    <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-sm font-medium text-gray-600">Active Filters:</span>
-                        {customerFilter && (
-                            <span className="inline-flex items-center gap-1 bg-indigo-100 text-indigo-800 text-sm px-3 py-1 rounded-full">
-                                Customer: {customerFilter}
-                                <button
-                                    onClick={() => setCustomerFilter('')}
-                                    className="hover:bg-indigo-200 rounded-full p-0.5"
-                                >
-                                    <X size={14} />
-                                </button>
-                            </span>
-                        )}
-                        {vehicleFilter && (
-                            <span className="inline-flex items-center gap-1 bg-indigo-100 text-indigo-800 text-sm px-3 py-1 rounded-full">
-                                Vehicle: {vehicleFilter}
-                                <button
-                                    onClick={() => setVehicleFilter('')}
-                                    className="hover:bg-indigo-200 rounded-full p-0.5"
-                                >
-                                    <X size={14} />
-                                </button>
-                            </span>
-                        )}
-                        {partNumberFilter && (
-                            <span className="inline-flex items-center gap-1 bg-indigo-100 text-indigo-800 text-sm px-3 py-1 rounded-full">
-                                Customer Item: {partNumberFilter}
-                                <button
-                                    onClick={() => setPartNumberFilter('')}
-                                    className="hover:bg-indigo-200 rounded-full p-0.5"
-                                >
-                                    <X size={14} />
-                                </button>
-                            </span>
-                        )}
-                    </div>
-                )}
-            </div>
-
-            {/* TOP ROW: KPI Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                <KPICard
-                    title="Total Revenue"
-                    value={kpis ? formatCurrency((kpis as any).total_revenue?.current_value || 0) : formatCurrency(0)}
-                    change={(kpis as any)?.total_revenue?.change_percent || 0}
-                    icon={DollarSign}
-                    bgColor="bg-white"
-                    iconColor="bg-indigo-600"
-                />
-                <KPICard
-                    title="Avg Job Value"
-                    value={kpis ? formatCurrency((kpis as any).avg_job_value?.current_value || 0) : formatCurrency(0)}
-                    change={(kpis as any)?.avg_job_value?.change_percent || 0}
-                    icon={TrendingUp}
-                    bgColor="bg-white"
-                    iconColor="bg-emerald-600"
-                />
-                <KPICard
-                    title="Inventory Alerts"
-                    value={inventoryAlerts.toString()}
-                    change={0}
-                    icon={AlertTriangle}
-                    bgColor="bg-orange-50"
-                    iconColor="bg-orange-500"
-                />
-                <KPICard
-                    title="Pending Actions"
-                    value={pendingActions.toString()}
-                    change={0}
-                    icon={ClipboardList}
-                    bgColor="bg-red-50"
-                    iconColor="bg-red-500"
-                />
-            </div>
+            {/* TOP ROW: Action Cards - Phase 1 Workflow Cards */}
+            <ActionCards
+                pendingBillsCount={reviewDates?.records?.length || 0}
+                unmappedItemsCount={stockLevels?.items?.filter((item: any) => !item.customer_items).length || 0}
+                outOfStockCount={stockSummary?.out_of_stock_count || 0}
+                totalSales={kpis ? (kpis as any).total_revenue?.current_value || 0 : 0}
+                salesChange={(kpis as any)?.total_revenue?.change_percent || 0}
+                dateRangeLabel={getDateRangeLabel()}
+                onNavigateToReviewSales={handleNavigateToReviewSales}
+                onNavigateToUnmappedItems={handleNavigateToUnmappedItems}
+                onNavigateToOutOfStock={handleNavigateToOutOfStock}
+            />
 
             {/* MIDDLE ROW: Inventory Command Center */}
-            <InventoryCommandCenter />
+            <InventoryCommandCenter
+                draftPOItems={draftPOItems}
+                onAddToDraft={handleAddToDraft}
+            />
 
-            {/* BOTTOM ROW: Charts */}
-            <div className="grid grid-cols-1 lg:grid-cols-7 gap-6">
-                {/* Sales Trend Chart - Wider (takes 4/7 of space) */}
-                <div className="lg:col-span-4 bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+            {/* BOTTOM ROW: Charts - Twin Towers with Equal Height */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                {/* Sales Trend Chart - Takes 6/12 width (50%) - Fixed Height */}
+                <div className="lg:col-span-6 bg-white p-6 rounded-lg shadow-sm border border-gray-200 h-[500px] flex flex-col">
                     <h3 className="text-lg font-semibold text-gray-900 mb-4">Sales Trend • Daily</h3>
                     {salesLoading ? (
                         <div className="flex items-center justify-center h-80">
@@ -424,71 +554,32 @@ const DashboardPage: React.FC = () => {
                         </div>
                     ) : (
                         <ResponsiveContainer width="100%" height={320}>
-                            <ComposedChart data={dailySales || []}>
-                                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                            <BarChart data={dailySales || []}>
+                                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
                                 <XAxis
                                     dataKey="date"
                                     tick={{ fontSize: 12 }}
-                                    tickFormatter={(value) => format(new Date(value), 'MMM dd')}
+                                    tickFormatter={(value) => format(new Date(value), 'EEE')}
                                 />
                                 <YAxis
-                                    yAxisId="left"
                                     tick={{ fontSize: 12 }}
                                     tickFormatter={(value) => formatCurrencyCompact(value)}
                                 />
-                                <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 12 }} />
-                                <Tooltip
-                                    formatter={(value: any, name?: string) => {
-                                        if (name === 'Revenue') return [formatCurrency(value), name];
-                                        return [value, name || ''];
-                                    }}
-                                    labelFormatter={(value) => format(new Date(value), 'MMM dd, yyyy')}
-                                />
+                                <Tooltip content={<CustomSalesTrendTooltip />} />
                                 <Legend />
-                                <Bar yAxisId="left" dataKey="revenue" fill="#6366F1" name="Revenue" radius={[4, 4, 0, 0]} />
-                                <Line
-                                    yAxisId="right"
-                                    type="monotone"
-                                    dataKey="volume"
-                                    stroke="#F59E0B"
-                                    strokeWidth={2}
-                                    name="Invoice Count"
-                                    dot={{ r: 4 }}
-                                />
-                            </ComposedChart>
+                                <Bar dataKey="parts_revenue" stackId="a" fill="#3B82F6" name="Spares" />
+                                <Bar dataKey="labor_revenue" stackId="a" fill="#F59E0B" name="Service" radius={[4, 4, 0, 0]} />
+                            </BarChart>
                         </ResponsiveContainer>
                     )}
                 </div>
 
-                {/* Revenue Mix Chart - Narrower (takes 3/7 of space) */}
-                <div className="lg:col-span-3 bg-white p-6 rounded-lg shadow-sm border border-gray-200">
-                    <h3 className="text-lg font-semibold text-gray-900 mb-4">Revenue Mix</h3>
-                    {pieData.length === 0 ? (
-                        <div className="flex items-center justify-center h-80 text-gray-500">
-                            <p>No revenue data for selected period</p>
-                        </div>
-                    ) : (
-                        <ResponsiveContainer width="100%" height={320}>
-                            <PieChart>
-                                <Pie
-                                    data={pieData}
-                                    cx="50%"
-                                    cy="50%"
-                                    labelLine
-                                    label={renderLabel}
-                                    outerRadius={100}
-                                    fill="#8884d8"
-                                    dataKey="value"
-                                >
-                                    {pieData.map((entry, index) => (
-                                        <Cell key={`cell-${index}`} fill={entry.color} />
-                                    ))}
-                                </Pie>
-                                <Tooltip formatter={(value: any) => formatCurrency(value)} />
-                            </PieChart>
-                        </ResponsiveContainer>
-                    )}
-                </div>
+                {/* Draft PO Manager - Narrower (takes 3/7 of space) */}
+                <DraftPOManager
+                    draftItems={draftPOItems}
+                    onRemoveItem={handleRemoveFromDraft}
+                    onUpdateQty={handleUpdateDraftQty}
+                />
             </div>
         </div>
     );

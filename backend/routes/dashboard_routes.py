@@ -66,7 +66,9 @@ class KPICard(BaseModel):
 class DailySalesVolume(BaseModel):
     """Daily sales with revenue and volume"""
     date: str
-    revenue: float
+    revenue: int  # Total revenue as integer
+    parts_revenue: int  # Spares revenue as integer
+    labor_revenue: int  # Service revenue as integer
     volume: int  # count of receipts
 
 
@@ -611,7 +613,7 @@ async def get_daily_sales_volume(
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     """
-    Get daily sales revenue and transaction volume.
+    Get daily sales revenue and transaction volume with parts/labor breakdown.
     """
     username = current_user.get("username")
     db = get_database_client()
@@ -625,12 +627,14 @@ async def get_daily_sales_volume(
         date_col = revenue_config.get("date_column", "date")
         amount_col = revenue_config.get("amount_column", "amount")
         receipt_col = revenue_config.get("receipt_column", "receipt_number")
+        type_col = revenue_config.get("type_column", "type")  # NEW: Get type column
         data_source = revenue_config.get("data_source", "verified_invoices")
         
         default_days = revenue_config.get("filters", {}).get("default_days", 30)
         date_from_str, date_to_str = get_date_range(date_from, date_to, default_days)
         
-        query = db.client.table(data_source).select(f"{date_col}, {amount_col}, {receipt_col}")
+        # Query with type column to enable parts/labor breakdown
+        query = db.client.table(data_source).select(f"{date_col}, {amount_col}, {receipt_col}, {type_col}")
         query = query.eq("username", username)
         query = query.gte(date_col, date_from_str)
         query = query.lte(date_col, date_to_str)
@@ -647,7 +651,7 @@ async def get_daily_sales_volume(
         
         items = (query.execute()).data or []
         
-        # Group by date
+        # Group by date with parts/labor breakdown
         daily_data: Dict[str, Dict[str, Any]] = {}
         
         for item in items:
@@ -669,19 +673,33 @@ async def get_daily_sales_volume(
             if date_key not in daily_data:
                 daily_data[date_key] = {
                     "revenue": 0.0,
+                    "parts_revenue": 0.0,
+                    "labor_revenue": 0.0,
                     "receipts": set()
                 }
             
-            daily_data[date_key]["revenue"] += float(item.get(amount_col) or 0)
+            amount = float(item.get(amount_col) or 0)
+            item_type = item.get(type_col, "").lower()
+            
+            daily_data[date_key]["revenue"] += amount
+            
+            # Split by type
+            if "part" in item_type:
+                daily_data[date_key]["parts_revenue"] += amount
+            elif "labour" in item_type or "labor" in item_type:
+                daily_data[date_key]["labor_revenue"] += amount
+            
             receipt = item.get(receipt_col)
             if receipt:
                 daily_data[date_key]["receipts"].add(receipt)
         
-        # Convert to list
+        # Convert to list with integer values
         result = [
             DailySalesVolume(
                 date=date_key,
-                revenue=round(data["revenue"], 2),
+                revenue=int(round(data["revenue"])),  # Integer, no decimals
+                parts_revenue=int(round(data["parts_revenue"])),  # Integer, no decimals
+                labor_revenue=int(round(data["labor_revenue"])),  # Integer, no decimals
                 volume=len(data["receipts"])
             )
             for date_key, data in sorted(daily_data.items())
@@ -695,6 +713,7 @@ async def get_daily_sales_volume(
     except Exception as e:
         logger.error(f"Error getting daily sales volume: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @router.get("/inventory-by-priority")
@@ -721,7 +740,7 @@ async def get_inventory_by_priority(
         # Get all stock items with priority and value
         value_col = stock_config.get("value_column", "total_value")
         query = db.client.table(data_source)\
-            .select(f"part_number, internal_item_name, {stock_col}, old_stock, {reorder_col}, {value_col}, priority")\
+            .select(f"part_number, internal_item_name, {stock_col}, old_stock, {reorder_col}, {value_col}, priority, unit_value")\
             .eq("username", username)
         
         # Filter by priority if specified
@@ -729,6 +748,7 @@ async def get_inventory_by_priority(
             query = query.eq("priority", priority)
         
         items = (query.execute()).data or []
+        
         
         # Calculate stats and categorize items
         total_items = len(items)
@@ -740,6 +760,7 @@ async def get_inventory_by_priority(
         missing_purchase_list = []  # NEW
         out_of_stock_list = []
         low_stock_list = []
+        healthy_list = []  # NEW: Include healthy items too
         
         for item in items:
             current_stock = float(item.get(stock_col) or 0)
@@ -748,19 +769,14 @@ async def get_inventory_by_priority(
             reorder = float(item.get(reorder_col) or 0)
             stock_value = float(item.get(value_col) or 0)
             
-            # Skip items with reorder_point of 0 or None - they shouldn't be monitored
-            if reorder <= 0:
-                # Still count them as healthy for stats, but don't include in critical list
-                healthy_count += 1
-                continue
-            
             item_data = {
                 "part_number": item.get("part_number") or "N/A",
                 "item_name": item.get("internal_item_name") or "Unknown Item",
                 "current_stock": round(stock_on_hand, 2),  # Stock on hand (current + old)
                 "reorder_point": round(reorder, 2),
                 "stock_value": round(stock_value, 2),
-                "priority": item.get("priority")
+                "priority": item.get("priority"),
+                "unit_value": item.get("unit_value")  # Last buy price
             }
             
             # Categorize based on stock_on_hand into 4 categories
@@ -775,18 +791,20 @@ async def get_inventory_by_priority(
                 low_stock_list.append(item_data)
             else:
                 healthy_count += 1
+                healthy_list.append(item_data)  # Include healthy items
         
         # Sort all lists by stock level (lowest first = most urgent)
         missing_purchase_list.sort(key=lambda x: x["current_stock"])
         out_of_stock_list.sort(key=lambda x: x["current_stock"])
         low_stock_list.sort(key=lambda x: x["current_stock"])
+        healthy_list.sort(key=lambda x: x["current_stock"])  # Sort healthy items too
         
-        # Combine lists: missing purchase first, then out-of-stock, then low stock
-        combined_items = missing_purchase_list + out_of_stock_list + low_stock_list
+        # Combine lists: missing purchase first, then out-of-stock, then low stock, then healthy
+        all_items = missing_purchase_list + out_of_stock_list + low_stock_list + healthy_list
         
         # Log what we're returning
         logger.info(f"Inventory for {username} (priority={priority}): total={total_items}, missing_purchase={missing_purchase_count}, out_of_stock={out_of_stock_count}, low={low_stock_count}, healthy={healthy_count}")
-        logger.info(f"Returning {len(combined_items[:20])} critical items (out of {len(combined_items)} needing attention)")
+        logger.info(f"Returning ALL {len(all_items)} items (no limit)")
         
         # Calculate percentages
         missing_purchase_pct = (missing_purchase_count / total_items * 100) if total_items > 0 else 0
@@ -807,7 +825,7 @@ async def get_inventory_by_priority(
                 "low_percentage": round(low_stock_pct, 1),
                 "healthy_percentage": round(healthy_pct, 1)
             },
-            "critical_items": combined_items[:20]  # Top 20 items needing attention
+            "critical_items": all_items  # Return ALL items (no [:20] limit)
         }
         
     except HTTPException:
@@ -843,7 +861,7 @@ async def search_inventory(
         
         # Search query - match on item name OR part number
         query = db.client.table(data_source)\
-            .select(f"part_number, internal_item_name, {stock_col}, old_stock, {reorder_col}, {value_col}, priority")\
+            .select(f"part_number, internal_item_name, {stock_col}, old_stock, {reorder_col}, {value_col}, priority, unit_value")\
             .eq("username", username)
         
         # Execute query and filter in memory (Supabase doesn't support OR in a simple way)
@@ -870,7 +888,8 @@ async def search_inventory(
                     "current_stock": round(stock_on_hand, 2),
                     "reorder_point": round(reorder, 2),
                     "stock_value": round(float(item.get(value_col) or 0), 2),
-                    "priority": item.get("priority")
+                    "priority": item.get("priority"),
+                    "unit_value": item.get("unit_value")  # Last buy price - ADDED
                 })
         
         # Sort by stock level (lowest first = most urgent)

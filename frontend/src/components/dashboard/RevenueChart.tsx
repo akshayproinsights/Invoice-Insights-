@@ -9,7 +9,7 @@ import {
     Legend,
     ResponsiveContainer,
 } from 'recharts';
-import { formatCurrency, formatDateShort, chartColors } from '../../utils/dashboardHelpers';
+import { formatDateShort, formatChartCurrency, formatYAxisValue, chartColors } from '../../utils/dashboardHelpers';
 import type { DailyRevenue } from '../../services/dashboardAPI';
 
 interface RevenueChartProps {
@@ -45,19 +45,25 @@ const RevenueChart: React.FC<RevenueChartProps> = ({
         );
     }
 
-    // Custom tooltip
+    // Custom tooltip with Service/Spares naming and integer formatting
     const CustomTooltip = ({ active, payload, label }: any) => {
         if (active && payload && payload.length) {
+            const totalRevenue = payload.reduce((sum: number, p: any) => sum + p.value, 0);
+            const sparesRevenue = payload.find((p: any) => p.dataKey === 'part_amount')?.value || 0;
+            const serviceRevenue = payload.find((p: any) => p.dataKey === 'labour_amount')?.value || 0;
+            const invoiceCount = payload[0]?.payload?.invoice_count || 0;
+
             return (
-                <div className="bg-white border border-gray-200 rounded-lg shadow-lg p-3">
-                    <p className="font-semibold text-gray-900 mb-2">{formatDateShort(label)}</p>
-                    {payload.map((entry: any, index: number) => (
-                        <p key={index} className="text-sm" style={{ color: entry.color }}>
-                            {entry.name}: {formatCurrency(entry.value)}
-                        </p>
-                    ))}
-                    <p className="text-sm font-semibold text-gray-900 mt-2 pt-2 border-t border-gray-200">
-                        Total: {formatCurrency(payload.reduce((sum: number, p: any) => sum + p.value, 0))}
+                <div className="bg-white border border-gray-200 rounded-lg shadow-lg p-3 min-w-[200px]">
+                    <p className="font-semibold text-gray-700 text-xs mb-2">{formatDateShort(label)}</p>
+                    <p className="text-base font-bold text-gray-900 mb-1">
+                        Total Revenue: {formatChartCurrency(totalRevenue)}
+                    </p>
+                    <p className="text-xs text-gray-500">
+                        Spares: {formatChartCurrency(sparesRevenue)} | Service: {formatChartCurrency(serviceRevenue)}
+                    </p>
+                    <p className="text-xs text-gray-600 mt-1">
+                        📝 {invoiceCount} {invoiceCount === 1 ? 'Invoice' : 'Invoices'}
                     </p>
                 </div>
             );
@@ -68,15 +74,20 @@ const RevenueChart: React.FC<RevenueChartProps> = ({
     return (
         <div className="w-full">
             <ResponsiveContainer width="100%" height={400}>
-                <BarChart data={data} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                <BarChart
+                    data={data}
+                    margin={{ top: 10, right: 0, left: -20, bottom: 0 }}
+                    barCategoryGap="20%"
+                >
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
                     <XAxis
                         dataKey="date"
                         tickFormatter={formatDateShort}
                         tick={{ fill: '#6b7280', fontSize: 12 }}
+                        padding={{ left: 10, right: 10 }}
                     />
                     <YAxis
-                        tickFormatter={(value) => `₹${value.toLocaleString('en-IN')}`}
+                        tickFormatter={(value) => formatYAxisValue(value)}
                         tick={{ fill: '#6b7280', fontSize: 12 }}
                     />
                     <Tooltip content={<CustomTooltip />} />
@@ -91,14 +102,14 @@ const RevenueChart: React.FC<RevenueChartProps> = ({
                         <>
                             <Bar
                                 dataKey="part_amount"
-                                name="Part Revenue"
+                                name="Spares Revenue"
                                 fill={chartColors.part}
                                 stackId="revenue"
-                                radius={[0, 0, 4, 4]}
+                                radius={[0, 0, 0, 0]}
                             />
                             <Bar
                                 dataKey="labour_amount"
-                                name="Labour Revenue"
+                                name="Service Revenue"
                                 fill={chartColors.labour}
                                 stackId="revenue"
                                 radius={[4, 4, 0, 0]}

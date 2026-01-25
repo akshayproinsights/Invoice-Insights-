@@ -125,6 +125,23 @@ export const chartColors = {
     warning: '#F59E0B', // Amber-500
     danger: '#EF4444', // Red-500
     info: '#3B82F6', // Blue-500
-    part: '#8B5CF6', // Purple-500
-    labour: '#14B8A6', // Teal-500
+    part: '#3B82F6', // Royal Blue (Spares - bottom bar)
+    labour: '#F59E0B', // Vibrant Amber (Service - top bar)
+};
+
+/**
+ * Format currency for charts (no decimals)
+ */
+export function formatChartCurrency(amount: number): string {
+    return `₹${Math.round(amount).toLocaleString('en-IN')}`;
+}
+
+/**
+ * Format Y-axis values with K suffix
+ */
+export function formatYAxisValue(value: number): string {
+    if (value >= 1000) {
+        return `${(value / 1000).toFixed(0)}k`;
+    }
+    return value.toString();
 };

@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useOutletContext } from 'react-router-dom';
+import { useOutletContext, useSearchParams } from 'react-router-dom';
 import { inventoryAPI } from '../services/inventoryApi';
 import { Search, Loader2, ExternalLink, Download, Edit, Save, X, Trash2, CheckSquare, Square } from 'lucide-react';
 import DeleteConfirmModal from '../components/DeleteConfirmModal';
@@ -29,6 +29,7 @@ interface ValidationError {
 const VerifyPartsPage: React.FC = () => {
     // Get context from Layout to set header actions
     const { setHeaderActions } = useOutletContext<{ setHeaderActions: (actions: React.ReactNode) => void }>();
+    const [searchParams] = useSearchParams();
 
     // Filter states
     const [searchTerm, setSearchTerm] = useState('');
@@ -37,7 +38,10 @@ const VerifyPartsPage: React.FC = () => {
     const [invoiceNumber, setInvoiceNumber] = useState('');
     const [partNumber, setPartNumber] = useState('');
     const [descriptionFilter, setDescriptionFilter] = useState('');
-    const [statusFilter, setStatusFilter] = useState('');
+    const [statusFilter, setStatusFilter] = useState(() => {
+        // Read from URL parameter if available
+        return searchParams.get('status') || '';
+    });
 
     // Edit states
     const [editingId, setEditingId] = useState<number | null>(null);

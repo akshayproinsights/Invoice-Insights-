@@ -8,6 +8,7 @@ export interface LoginCredentials {
 
 export interface User {
     username: string;
+    name?: string;
     r2_bucket: string;
     sheet_id: string;
     dashboard_url?: string;

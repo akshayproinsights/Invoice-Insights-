@@ -196,13 +196,22 @@ const CurrentStockPage: React.FC = () => {
     });
     const [loading, setLoading] = useState(true);
     const [searchQuery, setSearchQuery] = useState('');
-    const [statusFilter, setStatusFilter] = useState('all');
+    const [statusFilter, setStatusFilter] = useState(() => {
+        // Read from URL parameter if available
+        return searchParams.get('status') || 'all';
+    });
     const [priorityFilter, setPriorityFilter] = useState(() => {
         // Read from URL parameter if available
         return searchParams.get('priority') || 'all';
     });
-    const [setupModeFilter, setSetupModeFilter] = useState(false);
-    const [showMappedItems, setShowMappedItems] = useState(true); // For progress widget
+    const [setupModeFilter, setSetupModeFilter] = useState(() => {
+        // Read from URL parameter - if filter=todo, enable setup mode (To Do)
+        return searchParams.get('filter') === 'todo';
+    });
+    const [showMappedItems, setShowMappedItems] = useState(() => {
+        // Show "Mapped" view only if URL has filter=mapped
+        return searchParams.get('filter') === 'mapped';
+    });
     const [showAdjustmentModal, setShowAdjustmentModal] = useState(false);
     const [showHistoryModal, setShowHistoryModal] = useState(false);
     const [selectedPartHistory, setSelectedPartHistory] = useState<{ partNumber: string; itemName: string } | null>(null);
@@ -227,6 +236,9 @@ const CurrentStockPage: React.FC = () => {
     const [localCustomerItems, setLocalCustomerItems] = useState<{ [key: number]: string }>({});
     const [isMappingInProgress, setIsMappingInProgress] = useState(false); // Lock to prevent re-sort during mapping;
 
+    // Track if this is the first load after mounting (gets reset when user navigates away/back)
+    const isFirstLoad = useRef(true);
+
     // Selection and delete state
     const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
     const [isSelectAllChecked, setIsSelectAllChecked] = useState(false);
@@ -247,12 +259,11 @@ const CurrentStockPage: React.FC = () => {
         return () => document.removeEventListener('mousedown', handleClickOutside);
     }, []);
 
-    // Clear session flag when navigating away - allows sorting on next visit
+    // Reset isFirstLoad when component mounts (user navigates to this page)
     useEffect(() => {
-        return () => {
-            sessionStorage.removeItem('stock_page_loaded');
-        };
-    }, []);
+        console.log('📍 Stock page mounted - resetting sort flag');
+        isFirstLoad.current = true;
+    }, []); // Empty deps = runs on mount only
 
     // Set header actions (Upload, Export, and Bulk Delete buttons)
     useEffect(() => {
@@ -311,51 +322,83 @@ const CurrentStockPage: React.FC = () => {
                 getStockSummary(),
             ]);
 
-            // Only sort on FIRST page load (when navigating from another page)
-            // Don't sort during: edits, recalculations, refreshes, or mapping
-            let sortedItems = [...itemsData.items];
-
-            // Check if this is the first load in this session
-            const sessionKey = 'stock_page_loaded';
-            const hasLoadedBefore = sessionStorage.getItem(sessionKey);
-
-            if (!hasLoadedBefore) {
-                // First load - sort items
-                sortedItems = sortedItems.sort((a, b) => {
-                    const aHasCustomer = !!a.customer_items;
-                    const bHasCustomer = !!b.customer_items;
-
-                    if (aHasCustomer && !bHasCustomer) return -1;
-                    if (!aHasCustomer && bHasCustomer) return 1;
-
-                    // Within same group, sort alphabetically by customer item or internal name
-                    const aName = a.customer_items || a.internal_item_name || '';
-                    const bName = b.customer_items || b.internal_item_name || '';
-                    return aName.localeCompare(bName);
-                });
-
-                // Mark as loaded for this session
-                sessionStorage.setItem(sessionKey, 'true');
-            }
-            // On subsequent loads in same session: preserve order (no sorting)
-
-            // Set default reorder_point to 2 if not set
-            sortedItems.forEach(item => {
+            // Set default reorder_point to 2 if not set (for all incoming data)
+            itemsData.items.forEach(item => {
                 if (item.reorder_point === 0 || item.reorder_point === null) {
                     item.reorder_point = 2;
                 }
             });
 
-            setStockItems(sortedItems);
+            setStockItems(prevItems => {
+                // DECISION LOGIC:
+                // 1. If user is actively mapping an item (isMappingInProgress): PRESERVE ORDER (so they don't lose track)
+                // 2. If "All" filter is active (!setupModeFilter && !showMappedItems): APPLY "Mapped First" sorting
+                // 3. If filtered view (Mapped/To Do): PRESERVE ORDER (filter handles display)
+                // 4. First load: APPLY "Mapped First" sorting
+
+                const isAllFilterActive = !setupModeFilter && !showMappedItems;
+                const isFirstLoadOrEmpty = isFirstLoad.current || prevItems.length === 0;
+
+                // Helper function to sort mapped items first, then alphabetically within each group
+                const sortMappedFirst = (items: StockLevel[]) => {
+                    return [...items].sort((a, b) => {
+                        const aHasCustomer = !!a.customer_items;
+                        const bHasCustomer = !!b.customer_items;
+
+                        // Mapped items come first
+                        if (aHasCustomer && !bHasCustomer) return -1;
+                        if (!aHasCustomer && bHasCustomer) return 1;
+
+                        // Within each group, sort alphabetically by customer_items or internal_item_name
+                        const aName = a.customer_items || a.internal_item_name || '';
+                        const bName = b.customer_items || b.internal_item_name || '';
+                        return aName.localeCompare(bName);
+                    });
+                };
+
+                // If user is mapping an item, preserve order to avoid losing track
+                if (isMappingInProgress) {
+                    console.log('🔒 Mapping in progress - preserving order');
+                    // Update existing items with new data, keep order
+                    const newItemMap = new Map(itemsData.items.map(item => [item.id, item]));
+                    const preservedList = prevItems
+                        .map(prev => newItemMap.get(prev.id))
+                        .filter((item): item is StockLevel => item !== undefined);
+
+                    const prevIds = new Set(prevItems.map(i => i.id));
+                    const newItems = itemsData.items.filter(item => !prevIds.has(item.id));
+
+                    return [...preservedList, ...newItems];
+                }
+
+                // If "All" filter is active, always apply "Mapped First" sorting
+                if (isAllFilterActive || isFirstLoadOrEmpty) {
+                    console.log('🔄 Applying "Mapped First" Sort (All filter active or first load)');
+                    isFirstLoad.current = false;
+                    return sortMappedFirst(itemsData.items);
+                }
+
+                // For filtered views (Mapped/To Do), preserve order
+                console.log('📌 Preserving Order (Filtered view)');
+                const newItemMap = new Map(itemsData.items.map(item => [item.id, item]));
+                const preservedList = prevItems
+                    .map(prev => newItemMap.get(prev.id))
+                    .filter((item): item is StockLevel => item !== undefined);
+
+                const prevIds = new Set(prevItems.map(i => i.id));
+                const newItems = itemsData.items.filter(item => !prevIds.has(item.id));
+
+                return [...preservedList, ...newItems];
+            });
             setSummary(summaryData);
 
             // Calculate counts for progress widget
-            const pendingCount = sortedItems.filter(item => !item.customer_items).length;
+            const pendingCount = itemsData.items.filter(item => !item.customer_items).length;
             setPendingSetupCount(pendingCount);
 
             // Initialize local customer items state
             const localItems: { [key: number]: string } = {};
-            sortedItems.forEach(item => {
+            itemsData.items.forEach(item => {
                 if (item.customer_items) {
                     localItems[item.id] = item.customer_items;
                 }
@@ -366,19 +409,21 @@ const CurrentStockPage: React.FC = () => {
         } finally {
             setLoading(false);
         }
-    }, [searchQuery, statusFilter, priorityFilter, activeEditCells]);
+    }, [searchQuery, statusFilter, priorityFilter, setupModeFilter, showMappedItems, isMappingInProgress]); // Include filters for sorting logic
 
     useEffect(() => {
         loadData();
     }, [loadData]);
 
     // Auto-recalculate stock when page loads
+    // Note: We don't call loadData() here because the regular useEffect will handle it
+    // This prevents the sorted data from being overwritten with unsorted data
     useEffect(() => {
         const autoRecalculate = async () => {
             try {
                 await calculateStockLevels();
-                // Silently recalculate - no need to alert user
-                await loadData();
+                // Don't call loadData() - let the regular effect handle it
+                // This ensures the sorting happens on the final data load
             } catch (error) {
                 console.error('Auto-recalculation failed:', error);
             }
@@ -919,9 +964,24 @@ const CurrentStockPage: React.FC = () => {
                         />
                     </div>
 
-                    {/* Mapping Progress Widget - Gamified Segmented Control */}
+                    {/* Mapping Progress Widget - Three Segment Control */}
                     <div className="flex items-center gap-0 rounded-full overflow-hidden border-2 border-gray-200 shadow-sm">
-                        {/* Left Segment: Mapped Items (Green) */}
+                        {/* All Items */}
+                        <button
+                            onClick={() => {
+                                setShowMappedItems(false);
+                                setSetupModeFilter(false);
+                            }}
+                            className={`px-4 py-2 text-sm font-semibold transition-all flex items-center gap-2 whitespace-nowrap ${!showMappedItems && !setupModeFilter
+                                ? 'bg-blue-600 text-white shadow-md'
+                                : 'bg-white text-gray-700 hover:bg-gray-50'
+                                }`}
+                        >
+                            <span>🔵</span>
+                            <span>All</span>
+                        </button>
+
+                        {/* Mapped Items (Green) */}
                         <button
                             onClick={() => {
                                 setShowMappedItems(true);
@@ -936,15 +996,15 @@ const CurrentStockPage: React.FC = () => {
                             <span>{stockItems.filter(item => item.customer_items).length} Mapped</span>
                         </button>
 
-                        {/* Right Segment: To Do Items (Softer Orange) */}
+                        {/* To Do Items (Orange) */}
                         <button
                             onClick={() => {
                                 setShowMappedItems(false);
                                 setSetupModeFilter(true);
                             }}
                             className={`px-4 py-2 text-sm font-semibold transition-all flex items-center gap-2 whitespace-nowrap ${setupModeFilter
-                                ? 'bg-amber-100 text-amber-800 shadow-md'
-                                : 'bg-amber-100 text-amber-800 hover:bg-amber-50'
+                                ? 'bg-amber-500 text-white shadow-md'
+                                : 'bg-white text-amber-700 hover:bg-amber-50'
                                 }`}
                         >
                             <span>⚠️</span>
@@ -1059,11 +1119,15 @@ const CurrentStockPage: React.FC = () => {
                             <tbody className="divide-y divide-gray-200">
                                 {stockItems
                                     .filter(item => {
-                                        // Apply Setup Mode filter if enabled
+                                        // Apply Mapped/To Do filter
                                         if (setupModeFilter) {
-                                            return !item.customer_items; // Show only unmapped items
+                                            // "To Do" mode: Show only unmapped items
+                                            return !item.customer_items;
+                                        } else if (showMappedItems && !setupModeFilter) {
+                                            // "Mapped" mode: Show only mapped items
+                                            return !!item.customer_items;
                                         }
-                                        return true; // Show all items
+                                        return true; // Show all items (shouldn't reach here with current UI)
                                     })
                                     .map((item) => {
                                         const hasCustomerItem = !!localCustomerItems[item.id];
@@ -1106,8 +1170,8 @@ const CurrentStockPage: React.FC = () => {
                                                                 type="text"
                                                                 value={localCustomerItems[item.id] || ''}
                                                                 onFocus={() => {
-                                                                    setOpenDropdowns(prev => ({ ...prev, [item.id]: true }));
-                                                                    loadSuggestions(item.id);
+                                                                    // Don't open dropdown or load suggestions on focus
+                                                                    // Only show dropdown when user starts typing
                                                                 }}
                                                                 onChange={(e) => {
                                                                     const value = e.target.value;
@@ -1115,13 +1179,19 @@ const CurrentStockPage: React.FC = () => {
                                                                         ...prev,
                                                                         [item.id]: value
                                                                     }));
+                                                                    // Open dropdown when user types
+                                                                    if (value.trim().length > 0) {
+                                                                        setOpenDropdowns(prev => ({ ...prev, [item.id]: true }));
+                                                                    } else {
+                                                                        setOpenDropdowns(prev => ({ ...prev, [item.id]: false }));
+                                                                    }
                                                                     handleSearchChange(item.id, value);
                                                                 }}
                                                                 onBlur={() => handleCustomerItemBlur(item)}
                                                                 placeholder={hasCustomerItem ? "" : "Select Item..."}
                                                                 className={`w-full px-2 py-1 border rounded text-xs font-medium transition-colors truncate block ${hasCustomerItem
-                                                                    ? 'border-green-500 bg-green-50 text-green-700 pr-14'
-                                                                    : 'border-amber-400 border-dashed bg-white text-gray-600 pr-7'
+                                                                    ? 'border-green-500 bg-green-50 text-green-700 pr-6'
+                                                                    : 'border-amber-400 border-dashed bg-white text-gray-600 pr-2'
                                                                     }`}
                                                             />
 
@@ -1129,21 +1199,26 @@ const CurrentStockPage: React.FC = () => {
                                                             {hasCustomerItem && (
                                                                 <button
                                                                     onClick={() => handleClearCustomerItem(item)}
-                                                                    className="absolute right-7 top-1/2 transform -translate-y-1/2 text-red-500 hover:text-red-700 transition-colors z-10"
+                                                                    className="absolute right-2 top-1/2 transform -translate-y-1/2 text-red-500 hover:text-red-700 transition-colors z-10"
                                                                     type="button"
                                                                     title="Clear customer item mapping"
                                                                 >
                                                                     <X size={12} className="stroke-[2.5]" />
                                                                 </button>
                                                             )}
-                                                            {/* Dropdown toggle */}
-                                                            <button
-                                                                onClick={() => setOpenDropdowns(prev => ({ ...prev, [item.id]: !prev[item.id] }))}
-                                                                className="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                                                                type="button"
-                                                            >
-                                                                <ChevronDown size={14} className={`transition-transform ${openDropdowns[item.id] ? 'rotate-180' : ''}`} />
-                                                            </button>
+                                                            {/* Dropdown toggle - only show for unmapped items */}
+                                                            {!hasCustomerItem && (
+                                                                <button
+                                                                    onClick={() => {
+                                                                        // Toggle dropdown - not needed anymore since we type to search
+                                                                        // This button is now hidden for mapped items
+                                                                    }}
+                                                                    className="hidden"
+                                                                    type="button"
+                                                                >
+                                                                    <ChevronDown size={14} className={`transition-transform ${openDropdowns[item.id] ? 'rotate-180' : ''}`} />
+                                                                </button>
+                                                            )}
 
                                                             {/* Dropdown */}
                                                             {openDropdowns[item.id] && (
