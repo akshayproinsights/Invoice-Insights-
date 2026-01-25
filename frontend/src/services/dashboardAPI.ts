@@ -50,6 +50,8 @@ export interface DailySalesVolume {
     date: string;
     revenue: number;
     volume: number;
+    parts_revenue: number;
+    labor_revenue: number;
 }
 
 export interface InventoryByPriority {

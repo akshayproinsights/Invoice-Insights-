@@ -6,22 +6,14 @@ import {
     X,
     Calendar,
 } from 'lucide-react';
-import {
-    BarChart,
-    Bar,
-    XAxis,
-    YAxis,
-    CartesianGrid,
-    Tooltip,
-    Legend,
-    ResponsiveContainer,
-} from 'recharts';
+
 import { format, subDays, startOfMonth } from 'date-fns';
 import { dashboardAPI } from '../services/dashboardAPI';
 import AutocompleteInput from '../components/dashboard/AutocompleteInput';
 import InventoryCommandCenter from '../components/dashboard/InventoryCommandCenter';
 import ActionCards from '../components/dashboard/ActionCards';
 import DraftPOManager, { type DraftPOItem } from '../components/dashboard/DraftPOManager';
+import SalesTrendChart from '../components/dashboard/SalesTrendChart';
 
 const DashboardPage: React.FC = () => {
     const navigate = useNavigate();
@@ -87,12 +79,7 @@ const DashboardPage: React.FC = () => {
         staleTime: 30000,
     });
 
-    // Fetch revenue summary for pie chart
-    const { data: revenueSummary } = useQuery({
-        queryKey: ['revenueSummary', dateRange],
-        queryFn: () => dashboardAPI.getRevenueSummary(dateRange.start, dateRange.end),
-        staleTime: 30000,
-    });
+
 
     // Fetch stock summary for out of stock count
     const { data: stockSummary } = useQuery({
@@ -329,58 +316,11 @@ const DashboardPage: React.FC = () => {
     const formatCurrency = (value: number) =>
         `₹${value.toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
 
-    const formatCurrencyCompact = (value: number): string => {
-        if (value >= 10000000) {
-            // 1 Crore+
-            return `₹${(value / 10000000).toFixed(2)}Cr`;
-        } else if (value >= 100000) {
-            // 1 Lakh+
-            return `₹${(value / 100000).toFixed(2)}L`;
-        } else if (value >= 1000) {
-            // 1 Thousand+
-            return `₹${(value / 1000).toFixed(1)}k`;
-        }
-        return formatCurrency(value);
-    };
 
-    // Prepare pie chart data
-    const pieData = revenueSummary ? [
-        { name: 'Parts Sales', value: revenueSummary.part_revenue, color: '#6366F1' },
-        { name: 'Service/Labour', value: revenueSummary.labour_revenue, color: '#F59E0B' },
-    ].filter((item) => item.value > 0) : [];
 
-    // Custom label for pie chart
-    const renderLabel = (entry: any) => {
-        const total = pieData.reduce((sum, item) => sum + item.value, 0);
-        const percentage = total > 0 ? ((entry.value / total) * 100).toFixed(1) : '0';
-        return `${entry.name}: ${formatCurrencyCompact(entry.value)} (${percentage}%)`;
-    };
 
-    // Custom Tooltip for Sales Trend (Stacked Bar Chart)
-    const CustomSalesTrendTooltip = ({ active, payload, label }: any) => {
-        if (!active || !payload || payload.length === 0) return null;
 
-        const date = format(new Date(label), 'EEE, MMM dd');
-        const sparesRevenue = payload.find((p: any) => p.dataKey === 'parts_revenue')?.value || 0;
-        const serviceRevenue = payload.find((p: any) => p.dataKey === 'labor_revenue')?.value || 0;
-        const totalRevenue = sparesRevenue + serviceRevenue;
-        const invoiceCount = payload[0]?.payload?.volume || 0;
 
-        return (
-            <div className="bg-white p-3 rounded-lg shadow-lg border border-gray-200">
-                <p className="font-semibold text-gray-900 mb-2">{date}</p>
-                <p className="font-bold text-lg text-gray-900">
-                    Total Revenue: ₹{totalRevenue.toLocaleString('en-IN')}
-                </p>
-                <p className="text-sm text-gray-600 mt-1">
-                    Spares: ₹{sparesRevenue.toLocaleString('en-IN')} | Service: ₹{serviceRevenue.toLocaleString('en-IN')}
-                </p>
-                <p className="text-sm text-gray-700 mt-2">
-                    📝 {invoiceCount} Invoice{invoiceCount !== 1 ? 's' : ''}
-                </p>
-            </div>
-        );
-    };
 
     return (
         <div className="space-y-4 pb-8">
@@ -546,32 +486,12 @@ const DashboardPage: React.FC = () => {
             {/* BOTTOM ROW: Charts - Twin Towers with Equal Height */}
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                 {/* Sales Trend Chart - Takes 6/12 width (50%) - Fixed Height */}
-                <div className="lg:col-span-6 bg-white p-6 rounded-lg shadow-sm border border-gray-200 h-[500px] flex flex-col">
-                    <h3 className="text-lg font-semibold text-gray-900 mb-4">Sales Trend • Daily</h3>
-                    {salesLoading ? (
-                        <div className="flex items-center justify-center h-80">
-                            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600"></div>
-                        </div>
-                    ) : (
-                        <ResponsiveContainer width="100%" height={320}>
-                            <BarChart data={dailySales || []}>
-                                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
-                                <XAxis
-                                    dataKey="date"
-                                    tick={{ fontSize: 12 }}
-                                    tickFormatter={(value) => format(new Date(value), 'EEE')}
-                                />
-                                <YAxis
-                                    tick={{ fontSize: 12 }}
-                                    tickFormatter={(value) => formatCurrencyCompact(value)}
-                                />
-                                <Tooltip content={<CustomSalesTrendTooltip />} />
-                                <Legend />
-                                <Bar dataKey="parts_revenue" stackId="a" fill="#3B82F6" name="Spares" />
-                                <Bar dataKey="labor_revenue" stackId="a" fill="#F59E0B" name="Service" radius={[4, 4, 0, 0]} />
-                            </BarChart>
-                        </ResponsiveContainer>
-                    )}
+                <div className="lg:col-span-6 bg-white rounded-lg h-[500px]">
+                    <SalesTrendChart
+                        data={dailySales || []}
+                        isLoading={salesLoading}
+                        dateRangeLabel={getDateRangeLabel()}
+                    />
                 </div>
 
                 {/* Draft PO Manager - Narrower (takes 3/7 of space) */}

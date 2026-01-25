@@ -56,23 +56,6 @@ const DraftPOManager: React.FC<DraftPOManagerProps> = ({
                 <>
                     {/* Table Container - Flush Design (Edge-to-Edge) with Custom Scrollbar */}
                     <div className="flex-1 overflow-y-auto overflow-x-hidden custom-scrollbar">
-                        <style dangerouslySetInnerHTML={{
-                            __html: `
-                                .custom-scrollbar::-webkit-scrollbar {
-                                    width: 4px;
-                                }
-                                .custom-scrollbar::-webkit-scrollbar-track {
-                                    background: transparent;
-                                }
-                                .custom-scrollbar::-webkit-scrollbar-thumb {
-                                    background: #d1d5db;
-                                    border-radius: 9999px;
-                                }
-                                .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-                                    background: #9ca3af;
-                                }
-                            `
-                        }} />
                         <table className="w-full table-fixed">
                             {/* Fixed Column Widths - No Horizontal Scroll */}
                             <colgroup>

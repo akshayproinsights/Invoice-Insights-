@@ -9,6 +9,7 @@ interface InventoryItem {
     id: number;
     invoice_date: string;
     invoice_number: string;
+    vendor_name?: string; // New field
     part_number: string;
     description: string;
     qty: number;
@@ -18,6 +19,7 @@ interface InventoryItem {
     receipt_link: string;
     upload_date?: string;
     verification_status?: string;
+    row_accuracy?: number; // New field
     [key: string]: any;
 }
 
@@ -607,6 +609,7 @@ const VerifyPartsPage: React.FC = () => {
                                     </th>
                                     <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-20">Actions</th>
                                     <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-24">Date</th>
+                                    <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-32">Vendor</th>
                                     <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-32">Invoice #</th>
                                     <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-32">Part #</th>
                                     <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase">Description</th>
@@ -616,6 +619,7 @@ const VerifyPartsPage: React.FC = () => {
                                     <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-16">CGST</th>
                                     <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-16">SGST</th>
                                     <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-24">Net Bill</th>
+                                    <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-16">Acc%</th>
                                     <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-32">Uploaded</th>
                                     <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-16">Img</th>
                                     <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-16">Del</th>
@@ -680,6 +684,23 @@ const VerifyPartsPage: React.FC = () => {
                                                     />
                                                 ) : (
                                                     <span className="text-gray-900">{item.invoice_date || '—'}</span>
+                                                )}
+                                            </td>
+
+                                            {/* Vendor Name */}
+                                            <td className="px-2 py-2 text-xs">
+                                                {isEditing ? (
+                                                    <input
+                                                        type="text"
+                                                        value={currentItem.vendor_name || ''}
+                                                        onChange={(e) => handleFieldChange('vendor_name', e.target.value)}
+                                                        className="w-full px-1 py-1 border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 text-xs"
+                                                        placeholder="Vendor"
+                                                    />
+                                                ) : (
+                                                    <span className="text-gray-900 font-medium truncate block max-w-[120px]" title={item.vendor_name}>
+                                                        {item.vendor_name || '—'}
+                                                    </span>
                                                 )}
                                             </td>
 
@@ -809,6 +830,24 @@ const VerifyPartsPage: React.FC = () => {
                                             {/* Net Bill */}
                                             <td className="px-2 py-2 text-xs font-medium text-gray-900">
                                                 ₹{item.net_bill?.toFixed(2) || '0.00'}
+                                            </td>
+
+                                            {/* Row Accuracy */}
+                                            <td className="px-2 py-2 text-xs">
+                                                {(() => {
+                                                    const acc = item.row_accuracy !== undefined ? item.row_accuracy : (item.accuracy_score || 0);
+                                                    let colorClass = 'text-gray-400';
+                                                    if (acc >= 90) colorClass = 'text-green-600 font-medium';
+                                                    else if (acc >= 70) colorClass = 'text-blue-600';
+                                                    else if (acc >= 50) colorClass = 'text-orange-500';
+                                                    else if (acc > 0) colorClass = 'text-red-500 font-bold';
+
+                                                    return (
+                                                        <span className={colorClass} title={`Confidence: ${acc}%`}>
+                                                            {acc > 0 ? `${acc}%` : '—'}
+                                                        </span>
+                                                    );
+                                                })()}
                                             </td>
 
                                             {/* Upload Date */}
