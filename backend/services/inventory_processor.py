@@ -114,6 +114,29 @@ def process_vendor_invoice(
         items = extracted_data.get("items", [])
         accuracy = calculate_accuracy(items)
         
+        # QUALITY CHECK: Penalize if critical fields are missing
+        # This handles cases where Flash returns a valid JSON but with empty fields/template
+        header = extracted_data.get("header", {}) if isinstance(extracted_data.get("header"), dict) else {}
+        vendor_name = extracted_data.get("vendor_name", "") or header.get("vendor_name", "")
+        # Note: invoice_number might be missing on some valid bills, but vendor_name is critical for stock
+        
+        if not vendor_name or not str(vendor_name).strip():
+            logger.warning("Quality Check Failed: Missing Vendor Name. Forcing fallback to Pro model.")
+            accuracy = 0.0
+            
+        # Also check if we have items but they are empty "N/A" placeholders
+        if items:
+            valid_items = 0
+            for item in items:
+                desc = str(item.get("description", "")).strip()
+                part = str(item.get("part_number", "")).strip()
+                if desc and desc.lower() != "n/a" or part and part.lower() != "n/a":
+                    valid_items += 1
+            
+            if valid_items == 0:
+                logger.warning("Quality Check Failed: Items found but all appear empty/N/A. Forcing fallback.")
+                accuracy = 0.0
+        
         # Get token usage
         usage = response.usage_metadata
         input_tokens = usage.prompt_token_count if usage else 0
@@ -163,6 +186,7 @@ def process_vendor_invoice(
                 "invoice_type": extracted_data.get("invoice_type", "Printed"),
                 "invoice_number": extracted_data.get("invoice_number", ""),
                 "date": extracted_data.get("invoice_date", ""),
+                "vendor_name": extracted_data.get("vendor_name", ""),
                 "source_file": filename
             },
             "items": items,
@@ -294,6 +318,7 @@ def convert_to_inventory_rows(
             "invoice_type": invoice_type,
             "invoice_date": date_to_store,
             "invoice_number": header.get("invoice_number", ""),
+            "vendor_name": header.get("vendor_name", ""),
             
             # Line item details
             "part_number": item.get("part_number", "N/A"),

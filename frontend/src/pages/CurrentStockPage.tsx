@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useOutletContext, useSearchParams } from 'react-router-dom';
-import { Search, TrendingUp, TrendingDown, AlertTriangle, RefreshCw, ExternalLink, X, Package, ChevronDown, FileDown, Upload, Check, Trash2, CheckSquare, Square } from 'lucide-react';
+import { Search, TrendingUp, TrendingDown, AlertTriangle, RefreshCw, ExternalLink, X, Package, ChevronDown, FileDown, Upload, Check, Trash2, CheckSquare, Square, Plus, ShoppingCart } from 'lucide-react';
+import { purchaseOrderAPI } from '../services/purchaseOrderAPI';
 import DeleteConfirmModal from '../components/DeleteConfirmModal';
 import {
     getStockLevels,
@@ -244,6 +245,7 @@ const CurrentStockPage: React.FC = () => {
     const [isSelectAllChecked, setIsSelectAllChecked] = useState(false);
     const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
     const [itemToDelete, setItemToDelete] = useState<StockLevel | null>(null);
+    const [addingToPO, setAddingToPO] = useState<Set<string>>(new Set());
 
     const searchTimeoutRef = useRef<{ [key: number]: number }>({});
     const dropdownRef = useRef<HTMLDivElement>(null);
@@ -864,6 +866,38 @@ const CurrentStockPage: React.FC = () => {
         }
     };
 
+    // Handle add to draft PO
+    const handleAddToDraftPO = async (item: StockLevel) => {
+        const partNumber = item.part_number;
+        setAddingToPO(prev => new Set(prev).add(partNumber));
+
+        try {
+            await purchaseOrderAPI.quickAddToDraft(partNumber);
+            
+            // Show success feedback
+            const message = `Added "${item.internal_item_name}" to Draft PO`;
+            // You can replace this with a toast notification if available
+            const notification = document.createElement('div');
+            notification.className = 'fixed top-4 right-4 bg-green-500 text-white px-4 py-2 rounded-lg shadow-lg z-50';
+            notification.textContent = message;
+            document.body.appendChild(notification);
+            
+            setTimeout(() => {
+                document.body.removeChild(notification);
+            }, 3000);
+            
+        } catch (error: any) {
+            console.error('Error adding to draft PO:', error);
+            alert(error.response?.data?.detail || 'Failed to add item to draft PO');
+        } finally {
+            setAddingToPO(prev => {
+                const newSet = new Set(prev);
+                newSet.delete(partNumber);
+                return newSet;
+            });
+        }
+    };
+
     // Status badge
     const getStatusBadge = (status: string) => {
         const colors = {
@@ -1106,11 +1140,15 @@ const CurrentStockPage: React.FC = () => {
                                     <th className="px-4 py-3 text-right text-xs font-medium text-gray-600 uppercase w-32 min-w-24">
                                         Value
                                     </th>
-                                    {/* Col 11: History - Fixed w-20 */}
+                                    {/* Col 11: Add to PO - Fixed w-20 */}
+                                    <th className="px-4 py-3 text-center text-xs font-medium text-gray-600 uppercase w-20">
+                                        Add to PO
+                                    </th>
+                                    {/* Col 12: History - Fixed w-20 */}
                                     <th className="px-4 py-3 text-center text-xs font-medium text-gray-600 uppercase w-20">
                                         History
                                     </th>
-                                    {/* Col 12: Delete - Fixed w-16 */}
+                                    {/* Col 13: Delete - Fixed w-16 */}
                                     <th className="px-4 py-3 text-center text-xs font-medium text-gray-600 uppercase w-16">
 
                                     </th>
@@ -1358,7 +1396,33 @@ const CurrentStockPage: React.FC = () => {
                                                     </div>
                                                 </td>
 
-                                                {/* Col 11: History - Larger, more visible */}
+                                                {/* Col 11: Add to PO - Show for items that should be reordered */}
+                                                <td className="px-2 py-2 text-sm text-center">
+                                                    {(Math.round((item.current_stock || 0) + (item.old_stock || 0)) <= (item.reorder_point || 0)) ? (
+                                                        <button
+                                                            onClick={() => handleAddToDraftPO(item)}
+                                                            disabled={addingToPO.has(item.part_number)}
+                                                            className="inline-flex items-center gap-1 px-2 py-1 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium rounded transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
+                                                            title="Add to Draft Purchase Order"
+                                                        >
+                                                            {addingToPO.has(item.part_number) ? (
+                                                                <>
+                                                                    <RefreshCw size={12} className="animate-spin" />
+                                                                    <span>Adding...</span>
+                                                                </>
+                                                            ) : (
+                                                                <>
+                                                                    <Plus size={12} />
+                                                                    <span>Add</span>
+                                                                </>
+                                                            )}
+                                                        </button>
+                                                    ) : (
+                                                        <span className="text-gray-400 text-xs">-</span>
+                                                    )}
+                                                </td>
+
+                                                {/* Col 12: History - Larger, more visible */}
                                                 <td className="px-2 py-2 text-sm text-center">
                                                     <button
                                                         className="text-blue-600 hover:text-blue-800 hover:underline text-sm font-medium"
@@ -1375,7 +1439,7 @@ const CurrentStockPage: React.FC = () => {
                                                     </button>
                                                 </td>
 
-                                                {/* Col 12: Delete Stock Item - Show for ALL rows */}
+                                                {/* Col 13: Delete Stock Item - Show for ALL rows */}
                                                 <td className="px-2 py-2 text-sm text-center">
                                                     <button
                                                         onClick={() => handleDeleteStock(item)}

@@ -499,6 +499,10 @@ const DashboardPage: React.FC = () => {
                     draftItems={draftPOItems}
                     onRemoveItem={handleRemoveFromDraft}
                     onUpdateQty={handleUpdateDraftQty}
+                    onDraftUpdated={() => {
+                        // Refresh dashboard data when draft is updated
+                        refetchKPIs();
+                    }}
                 />
             </div>
         </div>
