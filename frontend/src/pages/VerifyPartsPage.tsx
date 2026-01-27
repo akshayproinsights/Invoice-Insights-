@@ -1,8 +1,12 @@
-import React, { useState, useMemo } from 'react';
+
+import React, { useState, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useOutletContext, useSearchParams } from 'react-router-dom';
+import { X, Search, Download, Trash2, Loader2, CheckSquare, Square, Save, Edit, ExternalLink } from 'lucide-react';
+
+
+import { useGlobalStatus } from '../contexts/GlobalStatusContext';
 import { inventoryAPI } from '../services/inventoryApi';
-import { Search, Loader2, ExternalLink, Download, Edit, Save, X, Trash2, CheckSquare, Square } from 'lucide-react';
 import DeleteConfirmModal from '../components/DeleteConfirmModal';
 
 interface InventoryItem {
@@ -29,6 +33,8 @@ interface ValidationError {
 }
 
 const VerifyPartsPage: React.FC = () => {
+    const { setInventoryStatus } = useGlobalStatus();
+
     // Get context from Layout to set header actions
     const { setHeaderActions } = useOutletContext<{ setHeaderActions: (actions: React.ReactNode) => void }>();
     const [searchParams] = useSearchParams();
@@ -67,6 +73,26 @@ const VerifyPartsPage: React.FC = () => {
 
     const queryClient = useQueryClient();
     const [items, setItems] = useState<InventoryItem[]>([]);
+
+    // Clear the "Review/Sync" badge when visiting this page
+    // Update Global Status based on pending items
+    useEffect(() => {
+        // Calculate pending items (amount_mismatch > 0 or status != 'Done')
+        // We consider 'Done' as verified/synced for the purpose of the badge count
+        const pendingCount = items.filter(i =>
+            i.amount_mismatch > 0 || (i.verification_status !== 'Done')
+        ).length;
+
+        // Update global status
+        // isComplete: false -> Clears the green tick from upload
+        // reviewCount: pendingCount -> Updates sidebar badge
+        // syncCount: 0 -> Clears any previous completion counts (from upload success)
+        setInventoryStatus({
+            reviewCount: pendingCount,
+            isComplete: false,
+            syncCount: 0
+        });
+    }, [items, setInventoryStatus]);
 
     const { isLoading, error } = useQuery({
         queryKey: ['inventory-all'],
@@ -139,7 +165,7 @@ const VerifyPartsPage: React.FC = () => {
         },
         onError: (error) => {
             isAutoSavingRef.current = false;
-            alert(`Error updating item: ${error instanceof Error ? error.message : 'Unknown error'}`);
+            alert(`Error updating item: ${error instanceof Error ? error.message : 'Unknown error'} `);
         }
     });
 
@@ -152,7 +178,7 @@ const VerifyPartsPage: React.FC = () => {
             queryClient.invalidateQueries({ queryKey: ['inventory-all'] });
         },
         onError: (error) => {
-            alert(`Error updating status: ${error instanceof Error ? error.message : 'Unknown error'}`);
+            alert(`Error updating status: ${error instanceof Error ? error.message : 'Unknown error'} `);
         }
     });
 
@@ -165,7 +191,7 @@ const VerifyPartsPage: React.FC = () => {
             queryClient.invalidateQueries({ queryKey: ['inventory-all'] });
         },
         onError: (error) => {
-            alert(`Error deleting item: ${error instanceof Error ? error.message : 'Unknown error'}`);
+            alert(`Error deleting item: ${error instanceof Error ? error.message : 'Unknown error'} `);
         }
     });
 
@@ -178,7 +204,7 @@ const VerifyPartsPage: React.FC = () => {
             queryClient.invalidateQueries({ queryKey: ['inventory-all'] });
         },
         onError: (error) => {
-            alert(`Error deleting items: ${error instanceof Error ? error.message : 'Unknown error'}`);
+            alert(`Error deleting items: ${error instanceof Error ? error.message : 'Unknown error'} `);
         }
     });
 
@@ -190,6 +216,15 @@ const VerifyPartsPage: React.FC = () => {
                 return `${field === 'qty' ? 'Quantity' : 'Rate'} must be a positive number`;
             }
         }
+
+        // Required fields
+        if (['invoice_number', 'invoice_date', 'part_number'].includes(field)) {
+            if (!value || value.toString().trim() === '') {
+                const formattedName = field.replace('_', ' ');
+                return `${formattedName.charAt(0).toUpperCase() + formattedName.slice(1)} is required`;
+            }
+        }
+
         return null;
     };
 
@@ -607,10 +642,9 @@ const VerifyPartsPage: React.FC = () => {
                                             {isSelectAllChecked ? <CheckSquare size={18} /> : <Square size={18} />}
                                         </button>
                                     </th>
-                                    <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-20">Actions</th>
+                                    <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-32">Invoice #</th>
                                     <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-24">Date</th>
                                     <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-32">Vendor</th>
-                                    <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-32">Invoice #</th>
                                     <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-32">Part #</th>
                                     <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase">Description</th>
                                     <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-24">HSN</th>
@@ -621,8 +655,7 @@ const VerifyPartsPage: React.FC = () => {
                                     <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-24">Net Bill</th>
                                     <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-16">Acc%</th>
                                     <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-32">Uploaded</th>
-                                    <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-16">Img</th>
-                                    <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-16">Del</th>
+                                    <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase w-24 sticky right-0 bg-gray-50 shadow-sm">Actions</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-gray-200">
@@ -642,35 +675,30 @@ const VerifyPartsPage: React.FC = () => {
                                                 </button>
                                             </td>
 
-                                            {/* Actions */}
-                                            <td className="px-2 py-2">
+                                            {/* Invoice Number */}
+                                            <td className="px-2 py-2 text-xs">
                                                 {isEditing ? (
-                                                    <div className="flex gap-1">
-                                                        <button
-                                                            onClick={handleSave}
-                                                            className="text-green-600 hover:text-green-800 transition p-1"
-                                                            title="Save"
-                                                        >
-                                                            <Save size={16} />
-                                                        </button>
-                                                        <button
-                                                            onClick={handleCancelEdit}
-                                                            className="text-red-600 hover:text-red-800 transition p-1"
-                                                            title="Cancel"
-                                                        >
-                                                            <X size={16} />
-                                                        </button>
-                                                    </div>
+                                                    <input
+                                                        type="text"
+                                                        value={currentItem.invoice_number || ''}
+                                                        onChange={(e) => handleFieldChange('invoice_number', e.target.value)}
+                                                        className="w-full px-1 py-1 border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 text-xs"
+                                                    />
                                                 ) : (
-                                                    <button
-                                                        onClick={() => handleEdit(item)}
-                                                        className="text-blue-600 hover:text-blue-800 transition p-1"
-                                                        title="Edit"
-                                                    >
-                                                        <Edit size={16} />
-                                                    </button>
+                                                    item.receipt_link ? (
+                                                        <a
+                                                            href={item.receipt_link}
+                                                            target="_blank"
+                                                            rel="noopener noreferrer"
+                                                            className="text-blue-600 hover:text-blue-800 hover:underline inline-flex items-center gap-1"
+                                                        >
+                                                            {item.invoice_number || '—'}
+                                                            <ExternalLink size={14} />
+                                                        </a>
+                                                    ) : (
+                                                        <span className="text-gray-900 break-all">{item.invoice_number || '—'}</span>
+                                                    )
                                                 )}
-
                                             </td>
 
                                             {/* Invoice Date */}
@@ -701,20 +729,6 @@ const VerifyPartsPage: React.FC = () => {
                                                     <span className="text-gray-900 font-medium truncate block max-w-[120px]" title={item.vendor_name}>
                                                         {item.vendor_name || '—'}
                                                     </span>
-                                                )}
-                                            </td>
-
-                                            {/* Invoice Number */}
-                                            <td className="px-2 py-2 text-xs">
-                                                {isEditing ? (
-                                                    <input
-                                                        type="text"
-                                                        value={currentItem.invoice_number || ''}
-                                                        onChange={(e) => handleFieldChange('invoice_number', e.target.value)}
-                                                        className="w-full px-1 py-1 border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 text-xs"
-                                                    />
-                                                ) : (
-                                                    <span className="text-gray-900 break-all">{item.invoice_number || '—'}</span>
                                                 )}
                                             </td>
 
@@ -771,7 +785,7 @@ const VerifyPartsPage: React.FC = () => {
                                                             value={currentItem.qty || ''}
                                                             onChange={(e) => handleFieldChange('qty', e.target.value)}
                                                             className={`w-full px-1 py-1 border rounded focus:ring-1 focus:ring-blue-500 text-xs ${getFieldError(item.id, 'qty') ? 'border-red-500 bg-red-50' : 'border-gray-300'
-                                                                }`}
+                                                                } `}
                                                         />
                                                     </div>
                                                 ) : (
@@ -789,7 +803,7 @@ const VerifyPartsPage: React.FC = () => {
                                                             value={currentItem.rate || ''}
                                                             onChange={(e) => handleFieldChange('rate', e.target.value)}
                                                             className={`w-full px-1 py-1 border rounded focus:ring-1 focus:ring-blue-500 text-xs ${getFieldError(item.id, 'rate') ? 'border-red-500 bg-red-50' : 'border-gray-300'
-                                                                }`}
+                                                                } `}
                                                         />
                                                     </div>
                                                 ) : (
@@ -808,7 +822,7 @@ const VerifyPartsPage: React.FC = () => {
                                                         className="w-full px-1 py-1 border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 text-xs"
                                                     />
                                                 ) : (
-                                                    <span className="text-gray-900">{item.cgst_percent ? `${item.cgst_percent}%` : '—'}</span>
+                                                    <span className="text-gray-900">{item.cgst_percent ? `${item.cgst_percent}% ` : '—'}</span>
                                                 )}
                                             </td>
 
@@ -823,7 +837,7 @@ const VerifyPartsPage: React.FC = () => {
                                                         className="w-full px-1 py-1 border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 text-xs"
                                                     />
                                                 ) : (
-                                                    <span className="text-gray-900">{item.sgst_percent ? `${item.sgst_percent}%` : '—'}</span>
+                                                    <span className="text-gray-900">{item.sgst_percent ? `${item.sgst_percent}% ` : '—'}</span>
                                                 )}
                                             </td>
 
@@ -832,7 +846,7 @@ const VerifyPartsPage: React.FC = () => {
                                                 ₹{item.net_bill?.toFixed(2) || '0.00'}
                                             </td>
 
-                                            {/* Row Accuracy */}
+                                            {/* Acc% */}
                                             <td className="px-2 py-2 text-xs">
                                                 {(() => {
                                                     const acc = item.row_accuracy !== undefined ? item.row_accuracy : (item.accuracy_score || 0);
@@ -843,14 +857,14 @@ const VerifyPartsPage: React.FC = () => {
                                                     else if (acc > 0) colorClass = 'text-red-500 font-bold';
 
                                                     return (
-                                                        <span className={colorClass} title={`Confidence: ${acc}%`}>
-                                                            {acc > 0 ? `${acc}%` : '—'}
+                                                        <span className={colorClass} title={`Confidence: ${acc}% `}>
+                                                            {acc > 0 ? `${acc}% ` : '—'}
                                                         </span>
                                                     );
                                                 })()}
                                             </td>
 
-                                            {/* Upload Date */}
+                                            {/* Uploaded */}
                                             <td className="px-2 py-2 text-xs text-gray-600">
                                                 {(item.upload_date || item.created_at)
                                                     ? new Date(item.upload_date || item.created_at).toLocaleString('en-IN', {
@@ -863,32 +877,43 @@ const VerifyPartsPage: React.FC = () => {
                                                     : '—'}
                                             </td>
 
-                                            {/* Image */}
-                                            <td className="px-2 py-2 text-xs">
-                                                {item.receipt_link ? (
-                                                    <a
-                                                        href={item.receipt_link}
-                                                        target="_blank"
-                                                        rel="noopener noreferrer"
-                                                        className="inline-flex items-center gap-0.5 text-blue-600 hover:text-blue-800 transition"
-                                                    >
-                                                        <ExternalLink size={14} />
-                                                        View
-                                                    </a>
+                                            {/* Actions */}
+                                            <td className="px-2 py-2 text-xs sticky right-0 bg-white shadow-sm">
+                                                {isEditing ? (
+                                                    <div className="flex gap-1">
+                                                        <button
+                                                            onClick={handleSave}
+                                                            className="text-green-600 hover:text-green-800 transition p-1"
+                                                            title="Save"
+                                                        >
+                                                            <Save size={16} />
+                                                        </button>
+                                                        <button
+                                                            onClick={handleCancelEdit}
+                                                            className="text-red-600 hover:text-red-800 transition p-1"
+                                                            title="Cancel"
+                                                        >
+                                                            <X size={16} />
+                                                        </button>
+                                                    </div>
                                                 ) : (
-                                                    <span className="text-gray-400">N/A</span>
+                                                    <div className="flex gap-1">
+                                                        <button
+                                                            onClick={() => handleEdit(item)}
+                                                            className="text-blue-600 hover:text-blue-800 transition p-1"
+                                                            title="Edit"
+                                                        >
+                                                            <Edit size={16} />
+                                                        </button>
+                                                        <button
+                                                            onClick={() => handleDelete(item)}
+                                                            className="text-red-600 hover:text-red-800 transition p-1"
+                                                            title="Delete"
+                                                        >
+                                                            <Trash2 size={16} />
+                                                        </button>
+                                                    </div>
                                                 )}
-                                            </td>
-
-                                            {/* Delete */}
-                                            <td className="px-2 py-2 text-xs">
-                                                <button
-                                                    onClick={() => handleDelete(item)}
-                                                    className="text-red-600 hover:text-red-800 transition p-1"
-                                                    title="Delete item"
-                                                >
-                                                    <Trash2 size={16} />
-                                                </button>
                                             </td>
                                         </tr>
                                     );
@@ -911,7 +936,7 @@ const VerifyPartsPage: React.FC = () => {
                 message={
                     deleteType === 'single'
                         ? `Are you sure you want to delete this item: ${itemToDelete?.part_number || itemToDelete?.description}? This data will be permanently removed from your system.`
-                        : `You are about to delete ${selectedIds.size} items. This data will be permanently removed from your system.`
+                        : `You are about to delete ${selectedIds.size} items.This data will be permanently removed from your system.`
                 }
                 itemCount={deleteType === 'bulk' ? selectedIds.size : undefined}
                 isDeleting={deleteItemMutation.isPending || bulkDeleteMutation.isPending}

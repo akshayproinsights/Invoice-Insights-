@@ -101,7 +101,6 @@ const ReviewDatesPage: React.FC = () => {
             queryClient.invalidateQueries({ queryKey: ['review-dates'] });
             queryClient.invalidateQueries({ queryKey: ['review-amounts'] });
             queryClient.invalidateQueries({ queryKey: ['verified'] });
-            queryClient.invalidateQueries({ queryKey: ['sync-metadata'] });
             alert('All changes have been saved and verified successfully!');
         },
         onError: (error) => {

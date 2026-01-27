@@ -6,8 +6,13 @@ import CroppedFieldPreview from '../components/CroppedFieldPreview';
 import StatusToggle from '../components/StatusToggle';
 import SyncProgressModal from '../components/SyncProgressModal';
 import DeleteConfirmModal from '../components/DeleteConfirmModal';
+import { useNavigate } from 'react-router-dom';
+import { useGlobalStatus } from '../contexts/GlobalStatusContext'; // NEW
 
 const ReviewInvoiceDetailsPage: React.FC = () => {
+    const navigate = useNavigate();
+    const { setSalesStatus } = useGlobalStatus(); // NEW
+    const [selectedInvoices, setSelectedInvoices] = useState<string[]>([]);
     const [records, setRecords] = useState<any[]>([]);
     const [showCompleted, setShowCompleted] = useState(false); // Default: show only pending
     const [syncProgress, setSyncProgress] = useState({
@@ -217,6 +222,19 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
         return finalCounts;
     }, [records]);
 
+    // NEW: Update global status whenever local counts change
+    React.useEffect(() => {
+        const totalPending = statusCounts.pending + statusCounts.duplicates;
+        const totalCompleted = statusCounts.completed;
+
+        setSalesStatus({
+            reviewCount: totalPending,
+            syncCount: totalCompleted,
+            // Calculate total processing if we want to show progress bar in sidebar (optional)
+            // processingCount: ... 
+        });
+    }, [statusCounts, setSalesStatus]);
+
 
     // Filter individual records (headers and line items) by status
     const filteredData = useMemo(() => {
@@ -243,6 +261,8 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
 
             if (pendingLineItems.length > 0) {
                 filteredLineItems[receiptNum] = pendingLineItems;
+                // Ensure header is shown if we have line items to review, even if header is done
+                filteredHeaders[receiptNum] = group.header;
             }
         });
 
@@ -463,7 +483,6 @@ const ReviewInvoiceDetailsPage: React.FC = () => {
             queryClient.invalidateQueries({ queryKey: ['review-dates'] });
             queryClient.invalidateQueries({ queryKey: ['review-amounts'] });
             queryClient.invalidateQueries({ queryKey: ['verified'] });
-            queryClient.invalidateQueries({ queryKey: ['sync-metadata'] });
             alert('All changes have been saved and verified successfully!');
         } catch (error) {
             setSyncProgress({ isOpen: false, stage: '', percentage: 0, message: '' });

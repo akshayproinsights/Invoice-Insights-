@@ -1,10 +1,11 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { Upload as UploadIcon, X, Loader2, CheckCircle, XCircle } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { uploadAPI } from '../services/api';
+import { uploadAPI as salesAPI } from '../services/api';
 import { useQueryClient } from '@tanstack/react-query';
 import DuplicateWarningModal from '../components/DuplicateWarningModal';
 import ImagePreviewModal from '../components/ImagePreviewModal';
+import { useGlobalStatus } from '../contexts/GlobalStatusContext';
 
 const UploadPage: React.FC = () => {
     const navigate = useNavigate();
@@ -14,7 +15,8 @@ const UploadPage: React.FC = () => {
     const [uploadProgress, setUploadProgress] = useState(0);
     const [isProcessing, setIsProcessing] = useState(false);
     const [processingStatus, setProcessingStatus] = useState<any>(null);
-    const [pollingInterval, setPollingInterval] = useState<number | null>(null);
+    const [, setPollingInterval] = useState<number | null>(null);
+    const intervalRef = React.useRef<number | null>(null); // Ref to track interval for cleanup
 
     // Upload tracking for bulk uploads
     const [uploadedCount, setUploadedCount] = useState(0);
@@ -27,10 +29,12 @@ const UploadPage: React.FC = () => {
     const [currentDuplicateIndex, setCurrentDuplicateIndex] = useState(0);
     const [showDuplicateModal, setShowDuplicateModal] = useState(false);
     const [duplicateInfo, setDuplicateInfo] = useState<any>(null);
+    const [, setDuplicateStats] = useState<{ totalUploaded: number; replaced: number; skipped: number; newFiles: number }>({ totalUploaded: 0, replaced: 0, skipped: 0, newFiles: 0 });
     const [filesToSkip, setFilesToSkip] = useState<string[]>([]);
     const [filesToForceUpload, setFilesToForceUpload] = useState<string[]>([]);
     const [uploadedFiles, setUploadedFiles] = useState<string[]>([]);
     const queryClient = useQueryClient();
+    const { setSalesStatus } = useGlobalStatus(); // NEW
 
     // Image preview modal state
     const [previewModalOpen, setPreviewModalOpen] = useState(false);
@@ -38,8 +42,11 @@ const UploadPage: React.FC = () => {
 
     // Resume monitoring on page load if there's an active task
     useEffect(() => {
+        // Clear completion badge if visiting this page
+        setSalesStatus({ isComplete: false });
+
         // First check if there's a saved completion status
-        const savedCompletion = localStorage.getItem('uploadCompletionStatus');
+        const savedCompletion = localStorage.getItem('salesCompletionStatus');
         if (savedCompletion) {
             try {
                 const completionData = JSON.parse(savedCompletion);
@@ -47,27 +54,50 @@ const UploadPage: React.FC = () => {
                 setIsProcessing(false); // ✓ Not processing anymore - completed
                 setIsUploading(false);
                 setFiles([]); // ✓ Clear files since we're done
-                console.log('📦 Restored completion status from localStorage');
+
+                // RESTORE GLOBAL STATUS
+                const processed = completionData.progress?.processed || 0;
+                setSalesStatus({
+                    isUploading: false,
+                    processingCount: 0,
+                    reviewCount: 0,
+                    syncCount: processed,
+                    isComplete: true // Show green tick
+                });
+
+
                 return; // Don't poll if already completed
             } catch (e) {
-                console.error('Error parsing completion status:', e);
-                localStorage.removeItem('uploadCompletionStatus');
+                console.error('Error parsing sales completion:', e);
+                localStorage.removeItem('salesCompletionStatus');
             }
         }
 
-        const activeTaskId = localStorage.getItem('activeUploadTaskId');
+        const activeTaskId = localStorage.getItem('activeSalesTaskId');
         if (activeTaskId) {
-            console.log('📦 Resuming upload session for task:', activeTaskId);
-
             // CRITICAL: Set processing state IMMEDIATELY before async call
             setIsProcessing(true);
             setIsUploading(false);
 
+            setSalesStatus({ isUploading: false, processingCount: 1, totalProcessing: 1, reviewCount: 0, syncCount: 0, isComplete: false });
+
             // Start continuous polling
             const interval = setInterval(async () => {
                 try {
-                    const statusData = await uploadAPI.getProcessStatus(activeTaskId);
-                    console.log('📊 Polled status:', statusData.status, `${statusData.progress?.processed}/${statusData.progress?.total}`);
+                    const statusData = await salesAPI.getProcessStatus(activeTaskId);
+
+                    // UPDATE GLOBAL STATUS
+                    const total = statusData.progress?.total || 0;
+                    const processed = statusData.progress?.processed || 0;
+                    const remaining = Math.max(0, total - processed);
+
+                    setSalesStatus({
+                        isUploading: false,
+                        processingCount: remaining,
+                        totalProcessing: total,
+                        reviewCount: 0,
+                        syncCount: 0
+                    });
 
                     // Preserve duplicateStats across updates
                     setProcessingStatus((prev: any) => ({
@@ -78,6 +108,7 @@ const UploadPage: React.FC = () => {
                     // Handle duplicate detection on resume
                     if (statusData.status === 'duplicate_detected' && (statusData as any).duplicates?.length > 0) {
                         clearInterval(interval);
+                        intervalRef.current = null;
                         setPollingInterval(null);
                         setIsProcessing(false);
 
@@ -89,43 +120,63 @@ const UploadPage: React.FC = () => {
                         setFilesToSkip([]);
                         setFilesToForceUpload([]);
 
-                        const allFileKeys = duplicates.map((dup: any) => dup.file_key);
-                        setUploadedFiles(allFileKeys);
+                        setSalesStatus({
+                            isUploading: false,
+                            processingCount: 0,
+                            reviewCount: duplicates.length,
+                            syncCount: processed
+                        });
 
-                        localStorage.removeItem('activeUploadTaskId');
+                        const allFileKeys = (statusData as any).uploaded_r2_keys || duplicates.map((dup: any) => dup.file_key);
+                        setUploadedFiles(allFileKeys);
+                        (window as any).__temp_r2_keys = allFileKeys;
+
+                        localStorage.removeItem('activeSalesTaskId');
                         return;
                     }
 
                     // Handle completion
                     if (statusData.status === 'completed' || statusData.status === 'failed') {
                         clearInterval(interval);
+                        intervalRef.current = null;
                         setPollingInterval(null);
-                        localStorage.removeItem('activeUploadTaskId');
-                        localStorage.setItem('uploadCompletionStatus', JSON.stringify(statusData));
-                        console.log('✅ Processing completed, saved to localStorage');
+                        localStorage.removeItem('activeSalesTaskId');
+                        localStorage.setItem('salesCompletionStatus', JSON.stringify(statusData));
+
+                        setSalesStatus({
+                            isUploading: false,
+                            processingCount: 0,
+                            reviewCount: 0,
+                            syncCount: processed
+                        });
+
                     }
                 } catch (error: any) {
                     console.error('Error polling status:', error);
                     if (error?.response?.status === 403 || error?.response?.status === 404) {
-                        console.log('Task no longer exists, clearing localStorage');
                         clearInterval(interval);
+                        intervalRef.current = null;
                         setPollingInterval(null);
-                        localStorage.removeItem('activeUploadTaskId');
+                        localStorage.removeItem('activeSalesTaskId');
                         setIsProcessing(false);
                         setProcessingStatus(null);
+                        setSalesStatus({ processingCount: 0, reviewCount: 0, syncCount: 0 });
                     }
                 }
             }, 1000);
 
+            intervalRef.current = interval;
             setPollingInterval(interval);
         }
 
         // Cleanup on unmount - IMPORTANT: Don't clear session, just stop polling
         return () => {
-            if (pollingInterval) {
-                console.log('🔄 Page unmounting - stopping polling (session preserved)');
-                clearInterval(pollingInterval);
+            if (intervalRef.current) {
+                clearInterval(intervalRef.current);
+                intervalRef.current = null;
             }
+            // Clear completion badge when leaving the page
+            setSalesStatus({ isComplete: false });
         };
     }, []);
 
@@ -208,7 +259,8 @@ const UploadPage: React.FC = () => {
             if (processingStatus?.status === 'completed' || processingStatus?.status === 'failed') {
                 setIsProcessing(false);
                 setProcessingStatus(null);
-                localStorage.removeItem('uploadCompletionStatus'); // Clear saved completion
+                localStorage.removeItem('salesCompletionStatus'); // Clear saved completion
+                setSalesStatus({ processingCount: 0, reviewCount: 0, syncCount: 0 }); // Clear global status
             }
 
             setFiles((prev) => [...prev, ...uniqueFiles]);
@@ -252,6 +304,14 @@ const UploadPage: React.FC = () => {
 
         try {
             setIsUploading(true);
+            setSalesStatus({
+                isUploading: true,
+                processingCount: files.length,
+                totalProcessing: files.length,
+                reviewCount: 0,
+                syncCount: 0
+            });
+
             setUploadProgress(0);
 
             // Initialize upload tracking
@@ -260,6 +320,7 @@ const UploadPage: React.FC = () => {
             setUploadedCount(0);
             setUploadStartTime(Date.now());
             setEstimatedTimeRemaining(null);
+            setDuplicateStats({ totalUploaded: totalFiles, replaced: 0, skipped: 0, newFiles: 0 });
 
             let fileKeys: string[] = [];
             const BATCH_SIZE = 5;
@@ -268,7 +329,7 @@ const UploadPage: React.FC = () => {
             for (let i = 0; i < totalFiles; i += BATCH_SIZE) {
                 const batch = files.slice(i, i + BATCH_SIZE);
 
-                const response = await uploadAPI.uploadFiles(batch, (progressEvent) => {
+                const response = await salesAPI.uploadFiles(batch, (progressEvent) => {
                     const batchPercent = progressEvent.loaded / progressEvent.total;
                     const validBatchSize = batch.length;
                     const currentBatchProgress = batchPercent * validBatchSize;
@@ -301,29 +362,46 @@ const UploadPage: React.FC = () => {
 
             // Start processing with forceUpload parameter
             setIsProcessing(true);
-            const processResponse = await uploadAPI.processInvoices(fileKeys, forceUpload);
+            setSalesStatus({ isUploading: false, processingCount: fileKeys.length, totalProcessing: fileKeys.length, reviewCount: 0, syncCount: 0 });
+
+            const processResponse = await salesAPI.processInvoices(fileKeys, forceUpload);
             setProcessingStatus(processResponse);
 
             // Save taskId to localStorage for persistence
             const taskId = processResponse.task_id;
-            localStorage.setItem('activeUploadTaskId', taskId);
+            localStorage.setItem('activeSalesTaskId', taskId);
             const pollInterval = setInterval(async () => {
-                const status = await uploadAPI.getProcessStatus(taskId);
+                const status = await salesAPI.getProcessStatus(taskId);
                 setProcessingStatus(status);
+
+                const processed = status.progress?.processed || 0;
+                const total = status.progress?.total || 0;
+                const remaining = Math.max(0, total - processed);
+                setSalesStatus({ processingCount: remaining, totalProcessing: total, reviewCount: 0, syncCount: 0 });
 
 
                 // Handle duplicate detection - START SEQUENTIAL WORKFLOW
                 if (status.status === 'duplicate_detected' && (status as any).duplicates?.length > 0) {
-                    console.log('🔍 DUPLICATE DETECTED:', status);
                     clearInterval(pollInterval);
+                    intervalRef.current = null;
+                    setPollingInterval(null);
                     setIsProcessing(false);
 
                     // Initialize duplicate queue
                     const duplicates = (status as any).duplicates;
-                    console.log('📋 Duplicates array:', duplicates);
+
 
                     setDuplicateQueue(duplicates);
                     setCurrentDuplicateIndex(0);
+
+                    setSalesStatus({
+                        processingCount: 0,
+                        reviewCount: duplicates.length,
+                        syncCount: processed
+                    });
+
+                    const newFilesProcessed = status.progress?.processed || 0;
+                    setDuplicateStats(prev => ({ ...prev, newFiles: newFilesProcessed }));
 
                     // Set first duplicate info - check if it has existing_invoice
                     const firstDup = duplicates[0];
@@ -336,8 +414,6 @@ const UploadPage: React.FC = () => {
                     // Before this point, uploadedFiles contains temp paths
                     // Now we need to extract the actual R2 keys that were uploaded
                     // The duplicates contain R2 file_keys
-                    const duplicateR2Keys = duplicates.map((d: any) => d.file_key);
-
                     // Since backend detected duplicates AFTER uploading ALL files to R2,
                     // we need to get all R2 keys (duplicates are subset)
                     // The backend should return all uploaded R2 keys in the status
@@ -347,9 +423,9 @@ const UploadPage: React.FC = () => {
                     // Store in window for passing through call chain (avoids React state timing)
                     (window as any).__temp_r2_keys = (status as any).uploaded_r2_keys || [];
 
-                    console.log('🔍 Duplicates detected:', duplicates.length);
-                    console.log('📋 Duplicate file keys:', duplicateR2Keys);
-                    console.log('📦 All uploaded R2 keys:', (status as any).uploaded_r2_keys || []);
+                    setUploadedFiles((status as any).uploaded_r2_keys || []); // Backend returns ALL R2 keys
+                    // Store in window for passing through call chain (avoids React state timing)
+                    (window as any).__temp_r2_keys = (status as any).uploaded_r2_keys || [];
 
                     return;
                 }
@@ -357,39 +433,46 @@ const UploadPage: React.FC = () => {
                 // Handle completion or failure
                 if (status.status === 'completed' || status.status === 'failed') {
                     clearInterval(pollInterval);
+                    intervalRef.current = null;
+                    setPollingInterval(null);
 
                     if (status.status === 'completed') {
                         // Call finishProcessing to properly set completion state
                         // This keeps files visible and shows Review Sales button
-                        finishProcessing();
+                        finishProcessing(status);
                     } else {
                         setIsProcessing(false);
+                        setSalesStatus({ processingCount: 0, reviewCount: 0, syncCount: 0 });
                     }
                 }
             }, 1000); // Poll every 1 second for responsive updates
+
+            intervalRef.current = pollInterval;
+            setPollingInterval(pollInterval);
         } catch (error) {
             console.error('Error:', error);
             setIsUploading(false);
             setIsProcessing(false);
+            setSalesStatus({ isUploading: false, processingCount: 0, reviewCount: 0, syncCount: 0 });
         }
     };
 
     // Sequential duplicate handling
     const handleSkipDuplicate = () => {
         const currentDup = duplicateQueue[currentDuplicateIndex];
-        console.log('⏭️ SKIP clicked for:', currentDup.file_key);
         const updatedSkip = [...filesToSkip, currentDup.file_key];
-        console.log('📝 Updated skip list:', updatedSkip);
         setFilesToSkip(updatedSkip);
+        setSalesStatus({ reviewCount: Math.max(0, duplicateQueue.length - (currentDuplicateIndex + 1)) });
+        setDuplicateStats(prev => ({ ...prev, skipped: prev.skipped + 1 }));
         moveToNextDuplicate(updatedSkip, filesToForceUpload, (window as any).__temp_r2_keys || []);
     };
 
     const handleUploadAnyway = () => {
         const currentDup = duplicateQueue[currentDuplicateIndex];
-        console.log('✅ REPLACE clicked for:', currentDup.file_key);
         const updatedForceUpload = [...filesToForceUpload, currentDup.file_key];
-        console.log('📝 Updated force upload list:', updatedForceUpload);
         setFilesToForceUpload(updatedForceUpload);
+        setSalesStatus({ reviewCount: Math.max(0, duplicateQueue.length - (currentDuplicateIndex + 1)) });
+        setDuplicateStats(prev => ({ ...prev, replaced: prev.replaced + 1 }));
         moveToNextDuplicate(filesToSkip, updatedForceUpload, (window as any).__temp_r2_keys || []);
     };
 
@@ -414,42 +497,30 @@ const UploadPage: React.FC = () => {
     };
 
     const processRemainingFiles = async (_skipList: string[] = filesToSkip, forceUploadList: string[] = filesToForceUpload, allR2Keys: string[] = uploadedFiles) => {
-        console.log('🚀 processRemainingFiles called');
-        console.log('  Skip list:', _skipList);
-        console.log('  Force upload list (duplicates to replace):', forceUploadList);
-        console.log('  All uploaded R2 keys (parameter):', allR2Keys);
+
 
         try {
             setIsProcessing(true);
+            setSalesStatus({ processingCount: allR2Keys.length, totalProcessing: allR2Keys.length, reviewCount: 0, syncCount: 0 });
 
             // CRITICAL: Filter uploadedFiles to ensure we only have R2 keys, not temp file paths
-            // R2 keys look like: "Adnak/sales/20260120_093222_IMG_..."
-            // Temp paths look like: "C:\\Users\\MSi\\AppData\\Local\\Temp\\..."
-            const r2FileKeys = allR2Keys;
 
-            console.log('🔑 R2 keys from backend:', r2FileKeys);
 
             // Calculate which files are NOT duplicates and weren't skipped
             // These were uploaded to R2 but processing stopped when duplicates were detected
-            console.log('Skip list:', _skipList);
-            console.log('All uploaded R2 keys (parameter):', allR2Keys);
+
 
             // Calculate which files are ACTUALLY new (not duplicates at all)
             // nonDuplicateFiles should exclude BOTH skipped AND replaced duplicates
             const allDuplicateKeys = [..._skipList, ...forceUploadList];
             const nonDuplicateFiles = allR2Keys.filter(key => !allDuplicateKeys.includes(key));
 
-            console.log('📦 Non-duplicate files (need processing):', nonDuplicateFiles);
-            console.log('🔄 Duplicate files to force upload:', forceUploadList);
 
             // Combine both: non-duplicates (normal process) + forced duplicates (replace old)
             const allFilesToProcess = [...nonDuplicateFiles, ...forceUploadList];
 
             if (allFilesToProcess.length > 0) {
-                console.log(`📤 Processing ${allFilesToProcess.length} files total...`);
-                console.log('📤 Processing', allFilesToProcess.length, 'files total...');
-                console.log('  -', nonDuplicateFiles.length, 'non-duplicate(s)');
-                console.log('  -', forceUploadList.length, 'forced duplicate(s)');
+
 
                 // Show processing state
                 // IMPORTANT: Store counts now to preserve them for summary message
@@ -468,12 +539,11 @@ const UploadPage: React.FC = () => {
                 // Send all files for processing
                 // CRITICAL: Force upload MUST be true because files are already in R2
                 // (even if we're not force-uploading duplicates, the non-duplicates are in R2)
-                const processResponse = await uploadAPI.processInvoices(allFilesToProcess, true);
-                console.log('✅ Process response:', processResponse);
+                const processResponse = await salesAPI.processInvoices(allFilesToProcess, true);
 
                 // IMPORTANT: Save task ID for session persistence
-                localStorage.setItem('activeUploadTaskId', processResponse.task_id);
-                console.log('💾 Saved task ID to localStorage:', processResponse.task_id);
+                localStorage.setItem('activeSalesTaskId', processResponse.task_id);
+
 
                 // Preserve duplicateStats from initial status
                 setProcessingStatus((prev: any) => ({
@@ -483,7 +553,20 @@ const UploadPage: React.FC = () => {
 
                 // Poll for completion
                 const interval = setInterval(async () => {
-                    const status = await uploadAPI.getProcessStatus(processResponse.task_id);
+                    const status = await salesAPI.getProcessStatus(processResponse.task_id);
+
+                    // UPDATE GLOBAL STATUS to keep sidebar in sync
+                    const total = status.progress?.total || 0;
+                    const processed = status.progress?.processed || 0;
+                    const remaining = Math.max(0, total - processed);
+
+                    setSalesStatus({
+                        processingCount: remaining,
+                        totalProcessing: total,
+                        reviewCount: 0,
+                        syncCount: 0
+                    });
+
                     // Preserve duplicateStats across polling updates
                     setProcessingStatus((prev: any) => ({
                         ...status,
@@ -492,17 +575,17 @@ const UploadPage: React.FC = () => {
 
                     if (status.status === 'completed' || status.status === 'failed') {
                         clearInterval(interval);
+                        intervalRef.current = null;
                         setPollingInterval(null);
-                        console.log('✅ Processing completed:', status);
                         finishProcessing(status);  // Pass latest status directly
                         localStorage.removeItem('activeUploadTaskId');  // Clear session
                     }
                 }, 1000);
 
                 // Store interval for cleanup
+                intervalRef.current = interval;
                 setPollingInterval(interval);
             } else {
-                console.log('⚠️ No files to process - all were skipped');
                 finishProcessing();
             }
         } catch (error) {
@@ -519,7 +602,6 @@ const UploadPage: React.FC = () => {
         // Just mark it as completed without recalculating
         if (statusToUse && statusToUse.progress) {
             // Calculate summary for user clarity
-            const totalUploaded = files.length;
             const totalProcessed = statusToUse.progress.processed || 0;
 
             // Use stored stats if available (set when processing started), otherwise fall back to state
@@ -544,16 +626,16 @@ const UploadPage: React.FC = () => {
             setProcessingStatus({
                 ...statusToUse,
                 status: 'completed',
-                message: summaryMessage
+                message: summaryMessage,
+                duplicateStats: {
+                    skipped: skippedCount,
+                    replaced: replacedCount,
+                    newFiles: newCount
+                }
             });
 
-            console.log('📊 Processing Summary:');
-            console.log(`  Total uploaded: ${totalUploaded}`);
-            console.log(`  New files: ${newCount}`);
-            console.log(`  Replaced duplicates: ${replacedCount}`);
-            console.log(`  Skipped duplicates: ${skippedCount}`);
-            console.log(`  Total processed: ${totalProcessed}`);
         }
+
 
         setIsProcessing(false);
         // DON'T clear files here - keep them visible so user can see completion state
@@ -604,7 +686,7 @@ const UploadPage: React.FC = () => {
             </div>
 
             {/* Two-Column Layout: Image Preview (Left) + Processing Status (Right) */}
-            {(files.length > 0 || isProcessing || processingStatus?.status === 'completed') && (
+            {(files.length > 0 || isProcessing || processingStatus) && (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                     {/* LEFT COLUMN: Image Preview & Upload Button - Hide if no files (resume case) */}
                     {files.length > 0 ? (
@@ -707,16 +789,46 @@ const UploadPage: React.FC = () => {
                     ) : processingStatus?.status === 'completed' ? (
                         // NEW: Completion summary on left side when returning to completed upload
                         <div className="bg-gradient-to-br from-green-50 to-emerald-50 rounded-xl shadow-sm border-2 border-green-200 p-6 flex items-center justify-center min-h-[300px]">
-                            <div className="text-center">
+                            <div className="text-center w-full px-4">
                                 <div className="mx-auto mb-4 w-20 h-20 rounded-full bg-green-100 flex items-center justify-center">
                                     <CheckCircle className="text-green-600" size={40} />
                                 </div>
                                 <p className="text-lg font-bold text-green-900 mb-2">
                                     Upload Successful! ✓
                                 </p>
-                                <p className="text-sm text-green-700 mb-1">
-                                    {processingStatus.progress?.processed || 0} invoice(s) processed
-                                </p>
+
+                                {/* Detailed Summary in Left Card */}
+                                <div className="bg-white/60 rounded-lg p-3 text-sm text-left mx-auto max-w-xs space-y-1 mb-2">
+                                    {(() => {
+                                        const stats = (processingStatus as any).duplicateStats || {};
+                                        const processed = processingStatus.progress?.processed || 0;
+                                        const newFiles = stats.newFiles !== undefined ? stats.newFiles : processed;
+                                        const replaced = stats.replaced || 0;
+                                        const skipped = stats.skipped || 0;
+
+                                        return (
+                                            <>
+                                                <div className="flex justify-between">
+                                                    <span className="text-green-800">New Files:</span>
+                                                    <span className="font-bold text-green-700">{newFiles}</span>
+                                                </div>
+                                                {replaced > 0 && (
+                                                    <div className="flex justify-between">
+                                                        <span className="text-blue-800">Replaced:</span>
+                                                        <span className="font-bold text-blue-700">{replaced}</span>
+                                                    </div>
+                                                )}
+                                                {skipped > 0 && (
+                                                    <div className="flex justify-between">
+                                                        <span className="text-orange-800">Skipped:</span>
+                                                        <span className="font-bold text-orange-700">{skipped}</span>
+                                                    </div>
+                                                )}
+                                            </>
+                                        );
+                                    })()}
+                                </div>
+
                                 <p className="text-xs text-green-600">
                                     {processingStatus.message}
                                 </p>
@@ -747,13 +859,13 @@ const UploadPage: React.FC = () => {
                                     {processingStatus.status === 'failed' && (
                                         <XCircle className="text-red-500" size={20} />
                                     )}
-                                    {(processingStatus.status === 'processing' || processingStatus.status === 'uploading') && (
+                                    {(processingStatus.status === 'processing' || processingStatus.status === 'uploading' || processingStatus.status === 'queued') && (
                                         <Loader2 className="animate-spin text-blue-500" size={20} />
                                     )}
                                 </div>
 
                                 {/* Progress Bar */}
-                                {(processingStatus.status === 'processing' || processingStatus.status === 'uploading') && processingStatus.progress && (
+                                {(processingStatus.status === 'processing' || processingStatus.status === 'uploading' || processingStatus.status === 'queued') && processingStatus.progress && (
                                     <div className="mb-3">
                                         <div className="flex justify-between items-center mb-1">
                                             <span className="text-xs font-medium text-gray-700">
@@ -804,18 +916,52 @@ const UploadPage: React.FC = () => {
                                 )}
 
                                 <div className="space-y-2 text-xs">
+                                    {/* Detailed Breakdown */}
                                     <div className="flex justify-between">
-                                        <span className="text-gray-600">Total Files:</span>
+                                        <span className="text-gray-600">Total Uploaded:</span>
                                         <span className="font-medium">{processingStatus.progress?.total || 0}</span>
                                     </div>
-                                    <div className="flex justify-between">
-                                        <span className="text-gray-600">Processed:</span>
-                                        <span className="font-medium text-green-600">
-                                            {processingStatus.progress?.processed || 0}
-                                        </span>
+
+                                    <div className="border-t border-gray-100 my-1 pt-1 space-y-1">
+                                        {/* Logic to extract stats safely */}
+                                        {(() => {
+                                            const stats = (processingStatus as any).duplicateStats || {};
+                                            const processed = processingStatus.progress?.processed || 0;
+
+                                            // If we have explicit stats, use them. 
+                                            // Otherwise fallback: if processed > 0, assume all are new (unless we know better)
+                                            // But really we only know for sure if duplicateStats exists.
+                                            const hasStats = stats.newFiles !== undefined;
+
+                                            const newFiles = hasStats ? stats.newFiles : processed;
+                                            const replaced = stats.replaced || 0;
+                                            const skipped = stats.skipped || 0;
+
+                                            return (
+                                                <>
+                                                    <div className="flex justify-between pl-2 border-l-2 border-green-100">
+                                                        <span className="text-gray-500">New Files:</span>
+                                                        <span className="font-medium text-green-600">{newFiles}</span>
+                                                    </div>
+                                                    {replaced > 0 && (
+                                                        <div className="flex justify-between pl-2 border-l-2 border-blue-100">
+                                                            <span className="text-gray-500">Replaced Duplicates:</span>
+                                                            <span className="font-medium text-blue-600">{replaced}</span>
+                                                        </div>
+                                                    )}
+                                                    {skipped > 0 && (
+                                                        <div className="flex justify-between pl-2 border-l-2 border-orange-100">
+                                                            <span className="text-gray-500">Skipped Duplicates:</span>
+                                                            <span className="font-medium text-orange-600">{skipped}</span>
+                                                        </div>
+                                                    )}
+                                                </>
+                                            );
+                                        })()}
                                     </div>
+
                                     {(processingStatus.progress?.failed || 0) > 0 && (
-                                        <div className="flex justify-between">
+                                        <div className="flex justify-between border-t border-gray-100 pt-1 mt-1">
                                             <span className="text-gray-600">Failed:</span>
                                             <span className="font-medium text-red-600">
                                                 {processingStatus.progress?.failed || 0}

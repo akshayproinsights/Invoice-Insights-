@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Search, X } from 'lucide-react';
+import { Search, X, ChevronDown } from 'lucide-react';
 
 interface AutocompleteInputProps {
     value: string;
@@ -8,6 +8,7 @@ interface AutocompleteInputProps {
     label: string;
     getSuggestions: (query: string) => Promise<string[]>;
     debounceMs?: number;
+    minChars?: number;
 }
 
 const AutocompleteInput: React.FC<AutocompleteInputProps> = ({
@@ -17,6 +18,7 @@ const AutocompleteInput: React.FC<AutocompleteInputProps> = ({
     label,
     getSuggestions,
     debounceMs = 300,
+    minChars = 2,
 }) => {
     const [suggestions, setSuggestions] = useState<string[]>([]);
     const [isLoading, setIsLoading] = useState(false);
@@ -24,6 +26,7 @@ const AutocompleteInput: React.FC<AutocompleteInputProps> = ({
     const [highlightedIndex, setHighlightedIndex] = useState(-1);
     const wrapperRef = useRef<HTMLDivElement>(null);
     const debounceTimer = useRef<number | null>(null);
+    const inputRef = useRef<HTMLInputElement>(null);
 
     // Close dropdown when clicking outside
     useEffect(() => {
@@ -43,13 +46,16 @@ const AutocompleteInput: React.FC<AutocompleteInputProps> = ({
             clearTimeout(debounceTimer.current);
         }
 
-        if (value.length >= 2) {
+        if (value.length >= minChars) {
             debounceTimer.current = setTimeout(async () => {
                 setIsLoading(true);
                 try {
                     const results = await getSuggestions(value);
                     setSuggestions(results);
-                    setShowDropdown(true);
+                    // Only open if we found results and input is focused
+                    if (document.activeElement === inputRef.current) {
+                        setShowDropdown(true);
+                    }
                     setHighlightedIndex(-1);
                 } catch (error) {
                     console.error('Error fetching suggestions:', error);
@@ -59,6 +65,9 @@ const AutocompleteInput: React.FC<AutocompleteInputProps> = ({
                 }
             }, debounceMs);
         } else {
+            // Only clear/close if we are below minChars and not manually toggled
+            // But usually for autocomplete, if you backspace below minChars, it should close/clear.
+            // We'll keep this simple: clear if below threshold.
             setSuggestions([]);
             setShowDropdown(false);
         }
@@ -68,10 +77,19 @@ const AutocompleteInput: React.FC<AutocompleteInputProps> = ({
                 clearTimeout(debounceTimer.current);
             }
         };
-    }, [value, getSuggestions, debounceMs]);
+    }, [value, getSuggestions, debounceMs, minChars]);
 
     const handleKeyDown = (e: React.KeyboardEvent) => {
-        if (!showDropdown || suggestions.length === 0) return;
+        if (!showDropdown) {
+            if (e.key === 'ArrowDown') {
+                // Open on down arrow
+                handleToggleDropdown();
+                e.preventDefault();
+            }
+            return;
+        }
+
+        if (suggestions.length === 0) return;
 
         switch (e.key) {
             case 'ArrowDown':
@@ -105,38 +123,81 @@ const AutocompleteInput: React.FC<AutocompleteInputProps> = ({
     const handleClear = () => {
         onChange('');
         setSuggestions([]);
-        setShowDropdown(false);
+        // Keep focus on input
+        inputRef.current?.focus();
+        // Optionally keep dropdown open or close it? usually close or show all
+        // If minChars=0, clearing might trigger 'show all' via useEffect
+    };
+
+    const handleToggleDropdown = async () => {
+        if (showDropdown) {
+            setShowDropdown(false);
+        } else {
+            // Manual open - fetch immediately
+            inputRef.current?.focus();
+            setIsLoading(true);
+            try {
+                const results = await getSuggestions(value);
+                setSuggestions(results);
+                setShowDropdown(true);
+                setHighlightedIndex(-1);
+            } catch (error) {
+                console.error('Error toggling suggestions:', error);
+            } finally {
+                setIsLoading(false);
+            }
+        }
     };
 
     return (
         <div ref={wrapperRef} className="relative">
-            <label className="block text-sm font-medium text-gray-700 mb-1">{label}</label>
+            {label && <label className="block text-sm font-medium text-gray-700 mb-1">{label}</label>}
             <div className="relative">
                 <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                     <Search size={16} className="text-gray-400" />
                 </div>
                 <input
+                    ref={inputRef}
                     type="text"
                     value={value}
                     onChange={(e) => onChange(e.target.value)}
                     onKeyDown={handleKeyDown}
-                    onFocus={() => value.length >= 2 && setSuggestions.length > 0 && setShowDropdown(true)}
+                    onFocus={() => {
+                        // Optional: Open on focus if value matches minChars?
+                        if (value.length >= minChars && suggestions.length > 0) {
+                            setShowDropdown(true);
+                        }
+                    }}
                     placeholder={placeholder}
-                    className="block w-full pl-10 pr-10 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 text-sm"
+                    className="block w-full pl-10 pr-16 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 text-sm"
                 />
-                {value && (
+
+                {/* Right Actions Container */}
+                <div className="absolute inset-y-0 right-0 pr-2 flex items-center gap-1">
+                    {value && (
+                        <button
+                            onClick={handleClear}
+                            className="p-1 hover:bg-gray-100 rounded-full text-gray-400 hover:text-gray-600 transition-colors"
+                            title="Clear"
+                        >
+                            <X size={14} />
+                        </button>
+                    )}
+
+                    {/* Divider if both X and Chevron are present? Nah, just space them */}
+
                     <button
-                        onClick={handleClear}
-                        className="absolute inset-y-0 right-0 pr-3 flex items-center hover:text-gray-700 text-gray-400"
+                        onClick={handleToggleDropdown}
+                        className={`p-1 hover:bg-gray-100 rounded-full text-gray-400 hover:text-gray-600 transition-colors transform ${showDropdown ? 'rotate-180' : ''}`}
+                        title="Toggle list"
                     >
-                        <X size={16} />
+                        <ChevronDown size={16} />
                     </button>
-                )}
-                {isLoading && (
-                    <div className="absolute inset-y-0 right-0 pr-10 flex items-center">
-                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-indigo-600"></div>
-                    </div>
-                )}
+
+                    {isLoading && (
+                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-indigo-600 ml-1"></div>
+                    )}
+                </div>
             </div>
 
             {/* Dropdown */}
@@ -157,5 +218,6 @@ const AutocompleteInput: React.FC<AutocompleteInputProps> = ({
         </div>
     );
 };
+
 
 export default AutocompleteInput;

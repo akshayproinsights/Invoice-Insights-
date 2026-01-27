@@ -1,6 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Trash2, ShoppingCart, FileText, Loader2, AlertCircle } from 'lucide-react';
 import { purchaseOrderAPI, type DraftPOItem as APIDraftPOItem, type ProceedToPORequest } from '../../services/purchaseOrderAPI';
+import MaterialRequestPDF from './MaterialRequestPDF';
+import AutocompleteInput from './AutocompleteInput';
+import html2canvas from 'html2canvas';
+import jsPDF from 'jspdf';
 
 export interface DraftPOItem {
     part_number: string;
@@ -30,19 +34,22 @@ const DraftPOManager: React.FC<DraftPOManagerProps> = ({
     const [processing, setProcessing] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [showProceedModal, setShowProceedModal] = useState(false);
+    const [createdPOData, setCreatedPOData] = useState<{
+        poNumber: string;
+        vendorName: string;
+        items: APIDraftPOItem[];
+        notes?: string;
+    } | null>(null);
 
     // Load draft items from API on component mount
     const loadDraftItems = useCallback(async () => {
         try {
-            console.log('🔄 FRONTEND CHECKPOINT F1: Loading draft items from API...');
             setLoading(true);
             setError(null);
             const response = await purchaseOrderAPI.getDraftItems();
-            console.log('🔄 FRONTEND CHECKPOINT F2: API response:', response);
             setApiDraftItems(response.items);
-            console.log('🔄 FRONTEND CHECKPOINT F3: Set API draft items:', response.items.length, 'items');
         } catch (err) {
-            console.error('❌ FRONTEND CHECKPOINT F4: Error loading draft items:', err);
+            console.error('Error loading draft items:', err);
             setError('Failed to load draft items');
         } finally {
             setLoading(false);
@@ -151,6 +158,18 @@ const DraftPOManager: React.FC<DraftPOManagerProps> = ({
         }
     };
 
+    // Generate Timestamp PO Number: PO DDMMYYYY_HHMMSS
+    const generatePONumber = () => {
+        const now = new Date();
+        const dd = String(now.getDate()).padStart(2, '0');
+        const mm = String(now.getMonth() + 1).padStart(2, '0');
+        const yyyy = now.getFullYear();
+        const HH = String(now.getHours()).padStart(2, '0');
+        const MM = String(now.getMinutes()).padStart(2, '0');
+        const SS = String(now.getSeconds()).padStart(2, '0');
+        return `PO ${dd}${mm}${yyyy}_${HH}${MM}${SS}`;
+    };
+
     // Handle proceed to PO
     const handleProceedToPO = async (supplierName?: string, notes?: string) => {
         if (draftItemsArray.length === 0) {
@@ -169,34 +188,23 @@ const DraftPOManager: React.FC<DraftPOManagerProps> = ({
 
             const response = await purchaseOrderAPI.proceedToPO(request);
 
-            if (response.success && response.pdf_blob) {
-                // Download the PDF
-                const url = window.URL.createObjectURL(response.pdf_blob);
-                const link = document.createElement('a');
-                link.href = url;
-                link.download = `PO_${response.po_number}.pdf`;
+            if (response.success) {
+                // Generate the Custom PO Number on the frontend
+                const customPONumber = generatePONumber();
 
-                document.body.appendChild(link);
-                link.click();
+                setCreatedPOData({
+                    poNumber: customPONumber,
+                    vendorName: supplierName || 'Unknown Vendor',
+                    items: [...draftItemsArray],
+                    notes: notes
+                });
 
-                // Cleanup
-                document.body.removeChild(link);
-                window.URL.revokeObjectURL(url);
-
-                // Clear local state
-                draftItems.clear();
-                onDraftUpdated?.();
-
-                // Refresh API items (should be empty now)
-                await loadDraftItems();
+                // NOTE: User requested NOT to clear items after PO creation
+                // draftItems.clear();
+                // onDraftUpdated?.();
+                // await loadDraftItems();
 
                 setShowProceedModal(false);
-
-                // Show success message
-                alert(`✅ Purchase Order ${response.po_number} created successfully!\n\n` +
-                    `Items: ${response.total_items}\n` +
-                    `Total: ₹${response.total_cost.toLocaleString('en-IN')}\n\n` +
-                    `PDF has been downloaded.`);
             }
 
         } catch (err) {
@@ -205,6 +213,78 @@ const DraftPOManager: React.FC<DraftPOManagerProps> = ({
         } finally {
             setProcessing(false);
         }
+    };
+
+    // --- PDF CHUNKING LOGIC ---
+    const getPages = () => {
+        if (!createdPOData) return [];
+        const items = createdPOData.items.map(item => ({
+            partNumber: item.part_number,
+            description: item.item_name,
+            quantity: item.reorder_qty
+        }));
+        const pages = [];
+        const ITEMS_PER_PAGE_FIRST = 10;
+        const ITEMS_PER_PAGE_OTHER = 14;
+
+        const firstPageItems = items.slice(0, ITEMS_PER_PAGE_FIRST);
+        pages.push(firstPageItems);
+
+        let remainingItems = items.slice(ITEMS_PER_PAGE_FIRST);
+        while (remainingItems.length > 0) {
+            const chunk = remainingItems.slice(0, ITEMS_PER_PAGE_OTHER);
+            pages.push(chunk);
+            remainingItems = remainingItems.slice(ITEMS_PER_PAGE_OTHER);
+        }
+        return pages;
+    };
+
+    const pdfPages = getPages();
+
+    const handleDownloadPDF = async () => {
+        if (!createdPOData || pdfPages.length === 0) return;
+
+        try {
+            const pdf = new jsPDF('p', 'mm', 'a4');
+            const pdfWidth = pdf.internal.pageSize.getWidth();
+
+            for (let i = 0; i < pdfPages.length; i++) {
+                const elementId = `material-request-pdf-${i}`;
+                const element = document.getElementById(elementId);
+
+                if (!element) {
+                    console.error(`Element ${elementId} not found`);
+                    continue;
+                }
+
+                const canvas = await html2canvas(element, {
+                    scale: 2,
+                    useCORS: true,
+                    logging: false,
+                    backgroundColor: '#ffffff'
+                });
+
+                const imgData = canvas.toDataURL('image/jpeg', 0.8);
+                const imgProps = pdf.getImageProperties(imgData);
+                const imgHeight = (imgProps.height * pdfWidth) / imgProps.width;
+
+                if (i > 0) pdf.addPage();
+
+                pdf.addImage(imgData, 'JPEG', 0, 0, pdfWidth, imgHeight);
+            }
+
+            const filename = `${createdPOData.poNumber.replace(/ /g, '_')}.pdf`;
+            pdf.save(filename);
+
+        } catch (err) {
+            console.error('PDF Download Failed:', err);
+            alert('Failed to download PDF. Please try again.');
+        }
+    };
+
+
+    const handleClosePOView = () => {
+        setCreatedPOData(null);
     };
 
     // Clear all items
@@ -221,6 +301,72 @@ const DraftPOManager: React.FC<DraftPOManagerProps> = ({
             }
         }
     };
+
+    if (createdPOData) {
+        return (
+            <div className="fixed inset-0 z-50 bg-white overflow-auto flex flex-col">
+                <div className="p-4 border-b flex justify-between items-center bg-gray-50">
+                    <h2 className="font-semibold text-gray-800">Material Request Created</h2>
+                    <div className="flex gap-4">
+                        <button
+                            onClick={handleClosePOView}
+                            className="px-4 py-2 text-gray-600 hover:text-gray-800 border bg-white border-gray-300 rounded shadow-sm"
+                        >
+                            Close
+                        </button>
+                        <button
+                            onClick={handleDownloadPDF}
+                            className="px-6 py-2.5 bg-blue-600 text-white hover:bg-blue-700 font-medium rounded-lg shadow-sm flex items-center gap-2 transition-colors"
+                        >
+                            <FileText size={18} /> Download PDF
+                        </button>
+                    </div>
+                </div>
+
+                {/* Scrollable Preview Area */}
+                <div className="flex-1 bg-gray-100 p-8 overflow-auto flex justify-center">
+                    <div className="flex flex-col gap-8">
+                        {pdfPages.map((chunk, index) => (
+                            <MaterialRequestPDF
+                                key={`preview-page-${index}`}
+                                id={`preview-page-${index}`} // Unique ID for preview to avoid conflicts
+                                poNumber={createdPOData.poNumber}
+                                date={new Date()}
+                                vendorName={createdPOData.vendorName}
+                                senderName="Adnak"
+                                senderPhone="9822197172"
+                                notes={createdPOData.notes}
+                                items={chunk}
+                                pageIndex={index}
+                                totalPages={pdfPages.length}
+                                startItemNumber={index === 0 ? 1 : 10 + ((index - 1) * 14) + 1}
+                            />
+                        ))}
+                    </div>
+                </div>
+
+                {/* HIDDEN GENERATION CONTAINER - Absolute positioned off-screen */}
+                <div style={{ position: 'absolute', top: '-10000px', left: '-10000px' }}>
+                    {pdfPages.map((chunk, index) => (
+                        <MaterialRequestPDF
+                            key={`pdf-page-${index}`}
+                            id={`material-request-pdf-${index}`} // Critical: Must match handleDownloadPDF target
+                            poNumber={createdPOData.poNumber}
+                            date={new Date()}
+                            vendorName={createdPOData.vendorName}
+                            senderName="Adnak"
+                            senderPhone="9822197172"
+                            notes={createdPOData.notes}
+                            items={chunk}
+                            pageIndex={index}
+                            totalPages={pdfPages.length}
+                            startItemNumber={index === 0 ? 1 : 10 + ((index - 1) * 14) + 1}
+                        />
+                    ))}
+                </div>
+            </div >
+        );
+    }
 
     return (
         <div className="lg:col-span-6 bg-white rounded-lg shadow-sm border border-gray-200 h-[500px] flex flex-col overflow-hidden">
@@ -279,7 +425,7 @@ const DraftPOManager: React.FC<DraftPOManagerProps> = ({
                                 <thead className="sticky top-0 z-10 bg-gray-50">
                                     <tr className="border-b border-gray-200">
                                         <th className="px-3 py-2 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Item</th>
-                                        <th className="px-2 py-2 text-center text-xs font-semibold text-gray-700 uppercase tracking-wider">Stock</th>
+                                        <th className="px-2 py-2 text-center text-xs font-semibold text-gray-700 uppercase tracking-wider">Stock / Reorder</th>
                                         <th className="px-2 py-2 text-center text-xs font-semibold text-gray-700 uppercase tracking-wider">Qty</th>
                                         <th className="px-2 py-2 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Cost</th>
                                         <th className="px-2 py-2 text-center text-xs font-semibold text-gray-700 uppercase tracking-wider">Action</th>
@@ -440,6 +586,29 @@ const ProceedModal: React.FC<ProceedModalProps> = ({
 }) => {
     const [supplierName, setSupplierName] = useState('');
     const [notes, setNotes] = useState('');
+    const [suppliers, setSuppliers] = useState<string[]>([]);
+
+    // Fetch suppliers on mount
+    useEffect(() => {
+        const loadSuppliers = async () => {
+            try {
+                const response = await purchaseOrderAPI.getSuppliers();
+                if (response.success) {
+                    setSuppliers(response.suppliers);
+                }
+            } catch (err) {
+                console.error('Error loading suppliers:', err);
+            }
+        };
+        loadSuppliers();
+    }, []);
+
+    // Suggestion logic
+    const getSupplierSuggestions = async (query: string) => {
+        const q = query.toLowerCase();
+        return suppliers.filter(s => s.toLowerCase().includes(q));
+    };
+
 
     const formatCurrency = (value: number): string => {
         return `₹${Math.round(value).toLocaleString('en-IN')}`;
@@ -472,13 +641,14 @@ const ProceedModal: React.FC<ProceedModalProps> = ({
                         <label className="block text-sm font-medium text-gray-700 mb-1">
                             Supplier Name (Optional)
                         </label>
-                        <input
-                            type="text"
+                        <AutocompleteInput
                             value={supplierName}
-                            onChange={(e) => setSupplierName(e.target.value)}
-                            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
-                            placeholder="Enter supplier name..."
-                            disabled={processing}
+                            onChange={(val) => setSupplierName(val)}
+                            placeholder="Enter or select supplier name..."
+                            label=""
+                            getSuggestions={getSupplierSuggestions}
+                            minChars={0}
+                            debounceMs={0}
                         />
                     </div>
 

@@ -465,23 +465,9 @@ async def sync_and_finish(
         # Execute sync
         results = await run_sync_verified_logic_supabase(username)
         
-        # Track sync metadata
-        if results["success"]:
-            try:
-                db = get_database_client()
-                sync_metadata = {
-                    "username": username,
-                    "sync_timestamp": datetime.utcnow().isoformat(),
-                    "records_processed": results.get("records_synced", 0),
-                    "sync_type": "full",
-                    "created_at": datetime.utcnow().isoformat()
-                }
-                db.insert('sync_metadata', sync_metadata)
-                logger.info(f"Sync metadata recorded for {username}")
-            except Exception as meta_error:
-                logger.warning(f"Failed to record sync metadata: {meta_error}")
-                # Don't fail the whole sync if metadata tracking fails
+
         
+
         return {
             "success": results["success"],
             "message": results["message"],
@@ -555,22 +541,6 @@ async def sync_and_finish_stream(
                 yield f"data: {json.dumps(event)}\n\n"
                 await asyncio.sleep(0.01)
             
-            # Record sync metadata
-            try:
-                from datetime import datetime
-                db = get_database_client()
-                sync_record = {
-                    'username': username,
-                    'sync_timestamp': datetime.utcnow().isoformat(),
-                    'records_processed': results.get('records_synced', 0),
-                    'sync_type': 'full',
-                    'created_at': datetime.utcnow().isoformat()
-                }
-                db.insert('sync_metadata', sync_record)
-                logger.info(f"Sync metadata recorded for {username}")
-            except Exception as e:
-                logger.error(f"Failed to record sync metadata: {e}")
-            
             # Send completion event
             completion_data = {
                 "stage": "complete",
@@ -600,54 +570,3 @@ async def sync_and_finish_stream(
             "X-Accel-Buffering": "no"
         }
     )
-
-
-@router.get("/sync-metadata")
-async def get_sync_metadata(
-    current_user: Dict[str, Any] = Depends(get_current_user)
-):
-    """
-    Get the last sync metadata for the current user
-    Returns information about when the user last synced and how many records were processed
-    """
-    username = current_user.get("username")
-    
-    if not username:
-        raise HTTPException(status_code=400, detail="No username in token")
-    
-    try:
-        db = get_database_client()
-        
-        # Query for the most recent sync metadata
-        result = db.client.table('sync_metadata') \
-            .select('*') \
-            .eq('username', username) \
-            .order('sync_timestamp', desc=True) \
-            .limit(1) \
-            .execute()
-        
-        if result.data and len(result.data) > 0:
-            metadata = result.data[0]
-            return {
-                "has_synced": True,
-                "sync_timestamp": metadata.get('sync_timestamp'),
-                "records_processed": metadata.get('records_processed', 0),
-                "sync_type": metadata.get('sync_type', 'full')
-            }
-        else:
-            return {
-                "has_synced": False,
-                "sync_timestamp": None,
-                "records_processed": 0,
-                "sync_type": None
-            }
-    
-    except Exception as e:
-        logger.error(f"Error fetching sync metadata: {e}")
-        # Don't fail hard, just return no metadata
-        return {
-            "has_synced": False,
-            "sync_timestamp": None,
-            "records_processed": 0,
-            "sync_type": None
-        }

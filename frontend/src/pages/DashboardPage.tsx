@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate, useOutletContext } from 'react-router-dom';
+import { useGlobalStatus } from '../contexts/GlobalStatusContext';
 import {
     ChevronDown,
     X,
@@ -88,19 +89,7 @@ const DashboardPage: React.FC = () => {
         staleTime: 30000,
     });
 
-    // Fetch pending bills count (header items from review API)
-    const { data: reviewDates } = useQuery({
-        queryKey: ['reviewDates'],
-        queryFn: async () => {
-            const response = await fetch(`${import.meta.env.VITE_API_URL}/api/review/dates`, {
-                headers: {
-                    'Authorization': `Bearer ${localStorage.getItem('auth_token')}`,
-                },
-            });
-            return response.json();
-        },
-        staleTime: 30000,
-    });
+    const { sales } = useGlobalStatus();
 
     // Fetch unmapped items count - use stock levels API to match Stock Register page
     const { data: stockLevels } = useQuery({
@@ -466,7 +455,7 @@ const DashboardPage: React.FC = () => {
 
             {/* TOP ROW: Action Cards - Phase 1 Workflow Cards */}
             <ActionCards
-                pendingBillsCount={reviewDates?.records?.length || 0}
+                pendingBillsCount={(sales.reviewCount + sales.syncCount) || 0}
                 unmappedItemsCount={stockLevels?.items?.filter((item: any) => !item.customer_items).length || 0}
                 outOfStockCount={stockSummary?.out_of_stock_count || 0}
                 totalSales={kpis ? (kpis as any).total_revenue?.current_value || 0 : 0}
@@ -491,6 +480,8 @@ const DashboardPage: React.FC = () => {
                         data={dailySales || []}
                         isLoading={salesLoading}
                         dateRangeLabel={getDateRangeLabel()}
+                        startDate={dateRange.start}
+                        endDate={dateRange.end}
                     />
                 </div>
 

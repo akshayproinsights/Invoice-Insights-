@@ -14,8 +14,7 @@ from auth import get_current_user
 from services.storage import get_storage_client
 from models.mapping_models import (
     MappingSheetUploadResponse,
-    MappingSheetExtractedData,
-    VendorMappingSheet
+    MappingSheetExtractedData
 )
 from config_loader import load_user_config
 from config import get_mappings_folder, get_google_api_key
@@ -152,7 +151,7 @@ async def upload_mapping_sheet(
                 skipped_count += 1
                 continue
             
-            # Check if stock_levels record exists
+            # Check if stock_levels record exists (just to verify validity of part number)
             existing_stock = db.client.table("stock_levels")\
                 .select("id, internal_item_name")\
                 .eq("username", username)\
@@ -160,66 +159,76 @@ async def upload_mapping_sheet(
                 .execute()
             
             if existing_stock.data:
-                # A. UPDATE stock_levels with priority, old_stock, reorder_point
-                # (NOT customer_items - that comes from vendor_mapping_entries)
-                update_data = {
-                    "priority": priority,
-                    "old_stock": stock,
-                    "reorder_point": reorder,
-                    "image_hash": file_hash,
-                    "updated_at": datetime.now().isoformat()
-                }
+                # 1. Update VENDOR MAPPING ENTRIES (Primary storage for Priority/Reorder)
+                internal_item_name = existing_stock.data[0].get("internal_item_name", vendor_description)
                 
-                db.client.table("stock_levels")\
-                    .update(update_data)\
+                # Check if mapping already exists
+                existing_mapping = db.client.table("vendor_mapping_entries")\
+                    .select("id")\
                     .eq("username", username)\
                     .eq("part_number", part_number)\
                     .execute()
-                updated_stock_count += 1
-                logger.info(f"✏️ Updated stock_levels for part {part_number}")
                 
-                # B. CREATE or UPDATE vendor_mapping_entries for customer item mapping
+                mapping_upsert_data = {
+                    "username": username,
+                    "part_number": part_number,
+                    "vendor_description": internal_item_name,
+                    "status": "Added",
+                    "updated_at": datetime.now().isoformat()
+                }
+                
+                # Add fields if they are present in extraction
                 if customer_item:
-                    internal_item_name = existing_stock.data[0].get("internal_item_name", vendor_description)
+                    mapping_upsert_data["customer_item_name"] = customer_item
+                if priority:
+                    mapping_upsert_data["priority"] = priority
+                if reorder is not None:
+                    mapping_upsert_data["reorder_point"] = reorder
+                
+                if existing_mapping.data:
+                    # UPDATE existing mapping
+                    db.client.table("vendor_mapping_entries")\
+                        .update(mapping_upsert_data)\
+                        .eq("id", existing_mapping.data[0]["id"])\
+                        .execute()
+                    updated_mapping_count += 1
+                    logger.info(f"📝 Updated mapping/priority/reorder for {part_number}")
+                else:
+                    # CREATE new mapping
+                    mapping_upsert_data["row_number"] = row_number
+                    mapping_upsert_data["created_at"] = datetime.now().isoformat()
+                    # Ensure customer_item matches logic if missing (maybe just internal name?)
+                    # If customer_item is null, we still create the entry to store priority/reorder
+                    if not customer_item:
+                         mapping_upsert_data["customer_item_name"] = "" 
                     
-                    # Check if mapping already exists
-                    existing_mapping = db.client.table("vendor_mapping_entries")\
-                        .select("id")\
+                    db.client.table("vendor_mapping_entries")\
+                        .insert(mapping_upsert_data)\
+                        .execute()
+                    created_mapping_count += 1
+                    logger.info(f"✨ Created mapping (+priority/reorder) for {part_number}")
+
+                # 2. UPDATE stock_levels TEMPORARILY (Old Stock only)
+                # Priority and Reorder will be sync'd during recalculation from mapping table
+                # But we update old_stock directly here as it lives in stock_levels (or could be moved?)
+                # User request only said "Priority and Reorder Point... into vendor_mapping_entries"
+                # So "Old Stock" (physical count) likely stays in stock_levels (conceptually it's a transactional snapshot)
+                
+                if stock is not None: 
+                    stock_update_data = {
+                        "old_stock": stock,
+                        "image_hash": file_hash,
+                        "updated_at": datetime.now().isoformat()
+                    }
+                    
+                    db.client.table("stock_levels")\
+                        .update(stock_update_data)\
                         .eq("username", username)\
                         .eq("part_number", part_number)\
                         .execute()
-                    
-                    if existing_mapping.data:
-                        # UPDATE existing mapping
-                        db.client.table("vendor_mapping_entries")\
-                            .update({
-                                "row_number": row_number,
-                                "customer_item_name": customer_item,
-                                "vendor_description": internal_item_name,
-                                "status": "Added",
-                                "updated_at": datetime.now().isoformat()
-                            })\
-                            .eq("username", username)\
-                            .eq("part_number", part_number)\
-                            .execute()
-                        updated_mapping_count += 1
-                        logger.info(f"📝 Updated mapping for part {part_number} → {customer_item}")
-                    else:
-                        # CREATE new mapping
-                        db.client.table("vendor_mapping_entries")\
-                            .insert({
-                                "username": username,
-                                "row_number": row_number,
-                                "part_number": part_number,
-                                "vendor_description": internal_item_name,
-                                "customer_item_name": customer_item,
-                                "status": "Added",
-                                "created_at": datetime.now().isoformat(),
-                                "updated_at": datetime.now().isoformat()
-                            })\
-                            .execute()
-                        created_mapping_count += 1
-                        logger.info(f"✨ Created mapping for part {part_number} → {customer_item}")
+                    updated_stock_count += 1
+                    logger.info(f"✏️ Updated stock count for {part_number} -> {stock}")
+
             else:
                 # SKIP - part number not found in existing stock_levels
                 skipped_count += 1
@@ -259,44 +268,4 @@ async def upload_mapping_sheet(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/sheets", response_model=List[VendorMappingSheet])
-async def get_mapping_sheets(current_user: dict = Depends(get_current_user)):
-    """Get all uploaded mapping sheets for current user"""
-    username = current_user.get("username")
-    
-    try:
-        db = get_database_client()
-        response = db.client.table("vendor_mapping_sheets")\
-            .select("*")\
-            .eq("username", username)\
-            .order("uploaded_at", desc=True)\
-            .execute()
-        
-        return response.data
-    
-    except Exception as e:
-        logger.error(f"Error fetching mapping sheets: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
-
-@router.delete("/sheets/{sheet_id}")
-async def delete_mapping_sheet(
-    sheet_id: str,
-    current_user: dict = Depends(get_current_user)
-):
-    """Delete a mapping sheet"""
-    username = current_user.get("username")
-    
-    try:
-        db = get_database_client()
-        response = db.client.table("vendor_mapping_sheets")\
-            .delete()\
-            .eq("id", sheet_id)\
-            .eq("username", username)\
-            .execute()
-        
-        return {"message": "Mapping sheet deleted successfully"}
-    
-    except Exception as e:
-        logger.error(f"Error deleting mapping sheet: {e}")
-        raise HTTPException(status_code=500, detail=str(e))

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import {
     BarChart,
     Bar,
@@ -9,7 +9,7 @@ import {
     Legend,
     ResponsiveContainer,
 } from 'recharts';
-import { format } from 'date-fns';
+import { format, eachDayOfInterval, parseISO, isSameDay } from 'date-fns';
 import { formatChartCurrency, formatYAxisValue, chartColors } from '../../utils/dashboardHelpers';
 import type { DailySalesVolume } from '../../services/dashboardAPI';
 
@@ -17,25 +17,80 @@ interface SalesTrendChartProps {
     data: DailySalesVolume[];
     isLoading?: boolean;
     dateRangeLabel?: string;
+    startDate?: string;
+    endDate?: string;
 }
 
 const SalesTrendChart: React.FC<SalesTrendChartProps> = ({
     data,
     isLoading = false,
     dateRangeLabel = 'This Period',
+    startDate,
+    endDate,
 }) => {
+    // Process data to ensure continuous date range
+    const processedData = useMemo(() => {
+        if (!data || !startDate || !endDate) return data || [];
+
+        try {
+            // Determine effective start/end dates
+            // If "All Time" (2000-01-01) is selected, start from the first actual data point
+            const dataSorted = [...data].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+            const firstDataDate = dataSorted.length > 0 ? dataSorted[0].date : startDate;
+            const lastDataDate = dataSorted.length > 0 ? dataSorted[dataSorted.length - 1].date : endDate;
+
+            const filterStart = parseISO(startDate);
+            const filterEnd = parseISO(endDate);
+
+            // For Start: Use data start if filter is "All Time" (2000 start), otherwise use filter start
+            // But ensure we don't start AFTER the filter end
+            let effectiveStart = startDate === '2000-01-01' ? parseISO(firstDataDate) : filterStart;
+
+            // For End: Use the EARLIER of (Filter End, Last Data). 
+            // This prevents showing empty space in the future if data stopped a while ago.
+            // But ensure we don't end BEFORE the filter start
+            const lastDataObj = parseISO(lastDataDate);
+            let effectiveEnd = lastDataObj < filterEnd ? lastDataObj : filterEnd;
+
+            // Safety check: if start > end, fallback to showing just the data range or filter range
+            if (effectiveStart > effectiveEnd) {
+                effectiveStart = filterStart;
+                effectiveEnd = filterEnd;
+            }
+
+            const allDays = eachDayOfInterval({ start: effectiveStart, end: effectiveEnd });
+
+            return allDays.map(day => {
+                const existingData = data.find(d => isSameDay(parseISO(d.date), day));
+                if (existingData) return existingData;
+
+                return {
+                    date: format(day, 'yyyy-MM-dd'),
+                    revenue: 0,
+                    volume: 0,
+                    parts_revenue: 0,
+                    labor_revenue: 0,
+                } as DailySalesVolume;
+            });
+        } catch (e) {
+            console.error("Error processing chart data:", e);
+            return data || [];
+        }
+    }, [data, startDate, endDate]);
+
     // Dynamic Bar Gap Logic
     const getBarCategoryGap = () => {
-        if (!data || data.length === 0) return '20%';
-        if (data.length <= 7) return '20%';  // Fat bars for "This Week"
-        if (data.length <= 30) return '10%'; // Medium bars for "This Month"
-        return '2%';                         // Thin bars for "90 Days" (Dense view)
+        if (!processedData || processedData.length === 0) return '20%';
+        if (processedData.length <= 7) return '20%';  // Fat bars for "This Week"
+        if (processedData.length <= 30) return '10%'; // Medium bars for "This Month"
+        return '2%';                                   // Thin bars for "90 Days" (Dense view)
     };
 
     // Smart X-Axis Interval Logic
     // If data > 30, show 1 label every 7 days (interval = 6 because 0-indexed)
     // Otherwise show all labels (interval = 0)
-    const xAxisInterval = data && data.length > 30 ? 6 : 0;
+    const xAxisInterval = processedData && processedData.length > 30 ? 6 : 0;
 
     // Custom Tooltip
     const CustomSalesTrendTooltip = ({ active, payload, label }: any) => {
@@ -77,7 +132,7 @@ const SalesTrendChart: React.FC<SalesTrendChartProps> = ({
                 <div className="flex items-center justify-center flex-1 h-full">
                     <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600"></div>
                 </div>
-            ) : !data || data.length === 0 ? (
+            ) : !processedData || processedData.length === 0 ? (
                 <div className="flex items-center justify-center flex-1 h-full">
                     <p className="text-gray-500">No data available for this period</p>
                 </div>
@@ -85,7 +140,7 @@ const SalesTrendChart: React.FC<SalesTrendChartProps> = ({
                 <div className="flex-1 w-full min-h-0">
                     <ResponsiveContainer width="100%" height="100%">
                         <BarChart
-                            data={data}
+                            data={processedData}
                             barCategoryGap={getBarCategoryGap()}
                             maxBarSize={50}
                         >
@@ -93,7 +148,7 @@ const SalesTrendChart: React.FC<SalesTrendChartProps> = ({
                             <XAxis
                                 dataKey="date"
                                 tick={{ fontSize: 12, fill: '#6B7280' }}
-                                tickFormatter={(value) => format(new Date(value), 'EEE')}
+                                tickFormatter={(value) => format(new Date(value), 'dd MMM')}
                                 padding={{ left: 20, right: 20 }}
                                 axisLine={false}
                                 tickLine={false}
@@ -129,3 +184,4 @@ const SalesTrendChart: React.FC<SalesTrendChartProps> = ({
 };
 
 export default SalesTrendChart;
+

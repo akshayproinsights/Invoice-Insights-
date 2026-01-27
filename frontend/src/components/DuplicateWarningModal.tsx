@@ -22,13 +22,7 @@ const DuplicateWarningModal: React.FC<DuplicateWarningModalProps> = ({
 }) => {
     const [isClosing, setIsClosing] = useState(false);
 
-    console.log('🎭 DuplicateWarningModal render:', {
-        isOpen,
-        duplicateData,
-        fileName,
-        currentIndex,
-        totalDuplicates
-    });
+
 
     if (!isOpen) return null;
 

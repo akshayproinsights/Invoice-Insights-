@@ -53,6 +53,7 @@ class InventoryProcessStatusResponse(BaseModel):
     progress: Dict[str, Any]
     message: str
     duplicates: Optional[List[Dict[str, Any]]] = []  # Add duplicates field
+    uploaded_r2_keys: List[str] = []  # CRITICAL: R2 keys for frontend
 
 
 @router.post("/upload", response_model=InventoryUploadResponse)
@@ -239,7 +240,8 @@ async def get_inventory_process_status(
         "status": status.get("status", "unknown"),
         "progress": status.get("progress", {}),
         "message": status.get("message", ""),
-        "duplicates": status.get("duplicates", [])  # Include duplicates array
+        "duplicates": status.get("duplicates", []),  # Include duplicates array
+        "uploaded_r2_keys": status.get("uploaded_r2_keys", [])  # CRITICAL: Include R2 keys
     }
 
 
@@ -347,6 +349,7 @@ def process_inventory_sync(
         if results.get("duplicates"):
             inventory_processing_status[task_id]["status"] = "duplicate_detected"
             inventory_processing_status[task_id]["duplicates"] = results["duplicates"]
+            inventory_processing_status[task_id]["uploaded_r2_keys"] = r2_file_keys  # CRITICAL: Frontend needs ALL R2 keys
             inventory_processing_status[task_id]["message"] = f"Duplicate vendor invoices detected: {len(results['duplicates'])} file(s)"
             logger.info(f"Duplicates detected: {len(results['duplicates'])}")
         else:

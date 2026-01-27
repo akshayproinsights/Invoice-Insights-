@@ -155,10 +155,7 @@ export const reviewAPI = {
         return response.data;
     },
 
-    getSyncMetadata: async () => {
-        const response = await apiClient.get('/api/review/sync-metadata');
-        return response.data;
-    },
+
 
     syncAndFinishWithProgress: (onProgress: (event: {
         stage: string;
@@ -311,20 +308,6 @@ export interface MappingSheetUploadResponse {
     extracted_rows?: number;
 }
 
-export interface VendorMappingSheet {
-    id: string;
-    username: string;
-    image_url: string;
-    image_hash: string;
-    part_number?: string;
-    vendor_description?: string;
-    customer_item?: string[];
-    old_stock?: number;
-    reorder_point?: number;
-    uploaded_at: string;
-    processed_at?: string;
-    status: string;
-}
 
 export const mappingSheetAPI = {
     upload: async (file: File): Promise<MappingSheetUploadResponse> => {
@@ -337,14 +320,5 @@ export const mappingSheetAPI = {
             },
         });
         return response.data;
-    },
-
-    getAll: async (): Promise<VendorMappingSheet[]> => {
-        const response = await apiClient.get('/api/stock/mapping-sheets/sheets');
-        return response.data;
-    },
-
-    delete: async (sheetId: string): Promise<void> => {
-        await apiClient.delete(`/api/stock/mapping-sheets/sheets/${sheetId}`);
     },
 };

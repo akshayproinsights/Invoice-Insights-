@@ -95,7 +95,7 @@ const QuickReorderList: React.FC<InventoryCommandCenterProps> = ({ draftPOItems,
 
         // Condition 2: Out of Stock - SHORTENED
         if (stock === 0) {
-            return { label: 'Empty', color: 'bg-red-100 text-red-700' };
+            return { label: 'Out of Stock', color: 'bg-red-100 text-red-700' };
         }
 
         // Condition 3: Low Stock (stock <= reorder_level)

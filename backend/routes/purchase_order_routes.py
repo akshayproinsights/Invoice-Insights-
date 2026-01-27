@@ -798,6 +798,58 @@ async def quick_add_to_draft(
         logger.info(f"🛒 CHECKPOINT B4: Created draft item with qty: {draft_item.reorder_qty}")
         
         # Add to draft
+        await add_draft_item(draft_item, current_user={"username": username})
+        
+        return {
+            "success": True,
+            "item": draft_item,
+            "message": "Item added to draft PO"
+        }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error quick adding to draft: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/suppliers")
+async def get_suppliers(
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Get unique supplier names from inventory items.
+    """
+    username = current_user.get("username")
+    db = get_database_client()
+    
+    try:
+        # Query distinct vendor names from inventory_items
+        # Fetching only vendor_name column to minimize data transfer
+        response = db.client.table("inventory_items")\
+            .select("vendor_name")\
+            .eq("username", username)\
+            .execute()
+            
+        items = response.data or []
+        
+        # Deduplicate and filter empty/None values
+        suppliers = list(set(
+            item.get("vendor_name") 
+            for item in items 
+            if item.get("vendor_name") and str(item.get("vendor_name")).strip() and str(item.get("vendor_name")).lower() != "nan"
+        ))
+        
+        # Sort alphabetically
+        suppliers.sort(key=lambda x: x.lower())
+        
+        return {
+            "success": True,
+            "suppliers": suppliers
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting suppliers: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
         result = await add_draft_item(draft_item, current_user)
         logger.info(f"✅ CHECKPOINT B5: Quick-add completed successfully")
         return result

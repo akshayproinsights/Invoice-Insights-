@@ -263,7 +263,6 @@ const CurrentStockPage: React.FC = () => {
 
     // Reset isFirstLoad when component mounts (user navigates to this page)
     useEffect(() => {
-        console.log('📍 Stock page mounted - resetting sort flag');
         isFirstLoad.current = true;
     }, []); // Empty deps = runs on mount only
 
@@ -360,7 +359,7 @@ const CurrentStockPage: React.FC = () => {
 
                 // If user is mapping an item, preserve order to avoid losing track
                 if (isMappingInProgress) {
-                    console.log('🔒 Mapping in progress - preserving order');
+
                     // Update existing items with new data, keep order
                     const newItemMap = new Map(itemsData.items.map(item => [item.id, item]));
                     const preservedList = prevItems
@@ -375,13 +374,11 @@ const CurrentStockPage: React.FC = () => {
 
                 // If "All" filter is active, always apply "Mapped First" sorting
                 if (isAllFilterActive || isFirstLoadOrEmpty) {
-                    console.log('🔄 Applying "Mapped First" Sort (All filter active or first load)');
                     isFirstLoad.current = false;
                     return sortMappedFirst(itemsData.items);
                 }
 
                 // For filtered views (Mapped/To Do), preserve order
-                console.log('📌 Preserving Order (Filtered view)');
                 const newItemMap = new Map(itemsData.items.map(item => [item.id, item]));
                 const preservedList = prevItems
                     .map(prev => newItemMap.get(prev.id))
@@ -682,7 +679,6 @@ const CurrentStockPage: React.FC = () => {
                     setFlashGreen(prev => ({ ...prev, [item.id]: false }));
                 }, 2000);
 
-                console.log(`Auto-saved customer item: ${typedValue} for ${item.part_number}`);
             } catch (error) {
                 console.error('Error auto-saving customer item:', error);
                 // Silently fail - don't bother user with error messages
@@ -873,7 +869,7 @@ const CurrentStockPage: React.FC = () => {
 
         try {
             await purchaseOrderAPI.quickAddToDraft(partNumber);
-            
+
             // Show success feedback
             const message = `Added "${item.internal_item_name}" to Draft PO`;
             // You can replace this with a toast notification if available
@@ -881,11 +877,11 @@ const CurrentStockPage: React.FC = () => {
             notification.className = 'fixed top-4 right-4 bg-green-500 text-white px-4 py-2 rounded-lg shadow-lg z-50';
             notification.textContent = message;
             document.body.appendChild(notification);
-            
+
             setTimeout(() => {
                 document.body.removeChild(notification);
             }, 3000);
-            
+
         } catch (error: any) {
             console.error('Error adding to draft PO:', error);
             alert(error.response?.data?.detail || 'Failed to add item to draft PO');
@@ -1090,67 +1086,62 @@ const CurrentStockPage: React.FC = () => {
                         <table className="w-full table-auto">
                             <thead className="bg-gray-50 border-b border-gray-200">
                                 <tr>
-                                    {/* Checkbox Column */}
-                                    <th className="px-4 py-3 text-left w-12">
+                                    {/* Checkbox Column - 1% */}
+                                    <th className="px-2 py-2 text-left w-[1%] whitespace-nowrap">
                                         <button
                                             onClick={handleSelectAll}
                                             className="text-gray-600 hover:text-gray-900 transition cursor-pointer p-1"
                                             title={isSelectAllChecked ? "Deselect all" : "Select all"}
                                         >
-                                            {isSelectAllChecked ? <CheckSquare size={18} /> : <Square size={18} />}
+                                            {isSelectAllChecked ? <CheckSquare size={16} /> : <Square size={16} />}
                                         </button>
                                     </th>
-                                    {/* Col 1: Item Details (Combined Internal Item Name + Part Number) - Flexible with min-width */}
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase min-w-56">
+                                    {/* Col 1: Item Details - Fluid (w-auto) */}
+                                    <th className="px-2 py-2 text-left text-[11px] font-bold text-gray-500 uppercase w-auto">
                                         Item Details
                                     </th>
-                                    {/* Col 2: Customer Item - Fixed w-48 */}
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase w-48 min-w-48">
+                                    {/* Col 2: Customer Item - 1% */}
+                                    <th className="px-2 py-2 text-left text-[11px] font-bold text-gray-500 uppercase w-[1%] whitespace-nowrap">
                                         Customer Item
                                     </th>
-                                    {/* Col 3: Priority - Fixed w-24 (increased for dropdown visibility) */}
-                                    <th className="px-4 py-3 text-center text-xs font-medium text-gray-600 uppercase w-24">
+                                    {/* Col 3: Priority - 1% */}
+                                    <th className="px-2 py-2 text-center text-[11px] font-bold text-gray-500 uppercase w-[1%] whitespace-nowrap">
                                         PRI
                                     </th>
-                                    {/* Col 4: Min Stock - Fixed w-20, Gray Background, Center Aligned */}
-                                    <th className="px-4 py-3 text-center text-xs font-medium text-gray-600 uppercase w-20 bg-gray-50">
+                                    {/* Col 4: Min Stock - 1% */}
+                                    <th className="px-2 py-2 text-center text-[11px] font-bold text-gray-500 uppercase w-[1%] whitespace-nowrap bg-gray-50">
                                         Min Stock
                                     </th>
-                                    {/* Col 5: Status - Fixed w-36 (increased for badge readability) */}
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase w-36">
+                                    {/* Col 5: Status - 1% */}
+                                    <th className="px-2 py-2 text-center text-[11px] font-bold text-gray-500 uppercase w-[1%] whitespace-nowrap">
                                         Status
                                     </th>
-                                    {/* Col 6: Opening (Old Stock) - Fixed w-20, Gray Background, Right Aligned */}
-                                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-600 uppercase w-20 min-w-16 bg-gray-50">
+                                    {/* Col 6: Opening - 1% */}
+                                    <th className="px-2 py-2 text-right text-[11px] font-bold text-gray-500 uppercase w-[1%] whitespace-nowrap bg-gray-50">
                                         Opening
                                     </th>
-                                    {/* Col 7: Purchased (In) - Fixed w-24, Right Aligned */}
-                                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-600 uppercase w-24 min-w-20">
+                                    {/* Col 7: In - 1% */}
+                                    <th className="px-2 py-2 text-right text-[11px] font-bold text-gray-500 uppercase w-[1%] whitespace-nowrap">
                                         In
                                     </th>
-                                    {/* Col 8: Sold (Out) - Fixed w-24, Right Aligned */}
-                                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-600 uppercase w-24 min-w-20">
+                                    {/* Col 8: Out - 1% */}
+                                    <th className="px-2 py-2 text-right text-[11px] font-bold text-gray-500 uppercase w-[1%] whitespace-nowrap">
                                         Out
                                     </th>
-                                    {/* Col 9: Stock On Hand (Result) - Fixed w-24, Right Aligned */}
-                                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-600 uppercase w-24 min-w-20">
+                                    {/* Col 9: On Hand - 1% */}
+                                    <th className="px-2 py-2 text-right text-[11px] font-bold text-gray-500 uppercase w-[1%] whitespace-nowrap">
                                         On Hand
                                     </th>
-                                    {/* Col 10: Total Value - Fixed w-32, Right Aligned */}
-                                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-600 uppercase w-32 min-w-24">
+                                    {/* Col 10: Value - Fixed Width Increased (w-28) */}
+                                    <th className="px-2 py-2 text-right text-[11px] font-bold text-gray-500 uppercase w-28 whitespace-nowrap">
                                         Value
                                     </th>
-                                    {/* Col 11: Add to PO - Fixed w-20 */}
-                                    <th className="px-4 py-3 text-center text-xs font-medium text-gray-600 uppercase w-20">
-                                        Add to PO
-                                    </th>
-                                    {/* Col 12: History - Fixed w-20 */}
-                                    <th className="px-4 py-3 text-center text-xs font-medium text-gray-600 uppercase w-20">
+                                    {/* History - 1% */}
+                                    <th className="px-2 py-2 text-center text-[11px] font-bold text-gray-500 uppercase w-[1%] whitespace-nowrap">
                                         History
                                     </th>
-                                    {/* Col 13: Delete - Fixed w-16 */}
-                                    <th className="px-4 py-3 text-center text-xs font-medium text-gray-600 uppercase w-16">
-
+                                    {/* Delete - 1% */}
+                                    <th className="px-2 py-2 text-center text-[11px] font-bold text-gray-500 uppercase w-[1%] whitespace-nowrap">
                                     </th>
                                 </tr>
                             </thead>
@@ -1174,36 +1165,36 @@ const CurrentStockPage: React.FC = () => {
                                         return (
                                             <tr
                                                 key={item.id}
-                                                className="bg-white hover:bg-gray-50 transition-colors"
+                                                className="bg-white border-b border-gray-100 hover:bg-gray-50 transition-colors"
                                             >
-                                                {/* Checkbox Column */}
-                                                <td className="px-4 py-3">
+                                                {/* Checkbox Column - 1% */}
+                                                <td className="px-2 py-2 w-[1%] whitespace-nowrap text-center">
                                                     <button
                                                         onClick={() => handleSelectRow(item.id)}
                                                         className="text-gray-600 hover:text-gray-900 transition cursor-pointer p-1"
                                                     >
-                                                        {selectedIds.has(item.id) ? <CheckSquare size={18} /> : <Square size={18} />}
+                                                        {selectedIds.has(item.id) ? <CheckSquare size={16} /> : <Square size={16} />}
                                                     </button>
                                                 </td>
 
-                                                {/* Col 1: Item Details (Combined Internal Item Name + Part Number) - Two-line layout */}
-                                                <td className="px-4 py-3">
-                                                    <div className="flex flex-col gap-1">
-                                                        <span className="text-sm text-gray-900 font-medium leading-tight">
+                                                {/* Col 1: Item Details - Fluid (w-auto) + Truncate */}
+                                                <td className="px-2 py-2 w-auto max-w-[200px] sm:max-w-xs md:max-w-md lg:max-w-xl truncate">
+                                                    <div className="flex flex-col gap-0.5 truncate">
+                                                        <span className="text-sm text-gray-900 font-medium leading-tight truncate" title={item.internal_item_name}>
                                                             {item.internal_item_name}
                                                         </span>
                                                         <span className="inline-flex items-center">
-                                                            <span className="px-2 py-0.5 bg-gray-100 text-gray-600 rounded text-xs font-mono">
+                                                            <span className="px-1.5 py-0.5 bg-gray-100 text-gray-600 rounded text-[10px] font-mono">
                                                                 {item.part_number}
                                                             </span>
                                                         </span>
                                                     </div>
                                                 </td>
 
-                                                {/* Col 2: Customer Item - Fixed w-48 */}
-                                                <td className="px-4 py-3 text-sm">
+                                                {/* Col 2: Customer Item - 1% + Input EXPANDED Width (w-60) */}
+                                                <td className="px-2 py-2 w-[1%] whitespace-nowrap text-sm">
                                                     <div className="flex items-center gap-2">
-                                                        <div className="relative flex-1">
+                                                        <div className="relative w-60">
                                                             <input
                                                                 type="text"
                                                                 value={localCustomerItems[item.id] || ''}
@@ -1226,9 +1217,9 @@ const CurrentStockPage: React.FC = () => {
                                                                     handleSearchChange(item.id, value);
                                                                 }}
                                                                 onBlur={() => handleCustomerItemBlur(item)}
-                                                                placeholder={hasCustomerItem ? "" : "Select Item..."}
-                                                                className={`w-full px-2 py-1 border rounded text-xs font-medium transition-colors truncate block ${hasCustomerItem
-                                                                    ? 'border-green-500 bg-green-50 text-green-700 pr-6'
+                                                                placeholder={hasCustomerItem ? "" : "Select..."}
+                                                                className={`w-full px-2 py-1 border rounded text-[11px] font-medium transition-colors truncate block ${hasCustomerItem
+                                                                    ? 'border-green-500 bg-green-50 text-green-700 pr-5'
                                                                     : 'border-amber-400 border-dashed bg-white text-gray-600 pr-2'
                                                                     }`}
                                                             />
@@ -1237,11 +1228,11 @@ const CurrentStockPage: React.FC = () => {
                                                             {hasCustomerItem && (
                                                                 <button
                                                                     onClick={() => handleClearCustomerItem(item)}
-                                                                    className="absolute right-2 top-1/2 transform -translate-y-1/2 text-red-500 hover:text-red-700 transition-colors z-10"
+                                                                    className="absolute right-1 top-1/2 transform -translate-y-1/2 text-red-500 hover:text-red-700 transition-colors z-10"
                                                                     type="button"
                                                                     title="Clear customer item mapping"
                                                                 >
-                                                                    <X size={12} className="stroke-[2.5]" />
+                                                                    <X size={10} className="stroke-[2.5]" />
                                                                 </button>
                                                             )}
                                                             {/* Dropdown toggle - only show for unmapped items */}
@@ -1254,13 +1245,13 @@ const CurrentStockPage: React.FC = () => {
                                                                     className="hidden"
                                                                     type="button"
                                                                 >
-                                                                    <ChevronDown size={14} className={`transition-transform ${openDropdowns[item.id] ? 'rotate-180' : ''}`} />
+                                                                    <ChevronDown size={12} className={`transition-transform ${openDropdowns[item.id] ? 'rotate-180' : ''}`} />
                                                                 </button>
                                                             )}
 
                                                             {/* Dropdown */}
                                                             {openDropdowns[item.id] && (
-                                                                <div className="absolute z-20 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-xl max-h-72 overflow-y-auto">
+                                                                <div className="absolute z-20 mt-1 w-64 bg-white border border-gray-200 rounded-lg shadow-xl max-h-72 overflow-y-auto left-0">
                                                                     {loadingSuggestions[item.id] ? (
                                                                         <div className="p-4 text-center text-gray-500 text-sm">
                                                                             Loading suggestions...
@@ -1293,13 +1284,13 @@ const CurrentStockPage: React.FC = () => {
                                                     </div>
                                                 </td>
 
-                                                {/* Col 3: Priority - Fixed w-24, Center Aligned */}
-                                                <td className="px-2 py-3 text-sm text-center">
+                                                {/* Col 3: Priority - 1% Center - Reduced Width */}
+                                                <td className="px-2 py-2 w-[1%] whitespace-nowrap text-sm text-center">
                                                     <select
                                                         value={item.priority || ''}
                                                         onChange={(e) => handleFieldUpdate(item.id, 'priority', e.target.value)}
                                                         disabled={savingFields[`${item.id}-priority`]}
-                                                        className="w-full px-1 py-1 border border-gray-300 rounded text-xs text-center focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-wait"
+                                                        className="w-16 px-1 py-1 border border-gray-300 rounded text-[11px] text-center focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-wait"
                                                     >
                                                         <option value="">-</option>
                                                         <option value="P0">P0</option>
@@ -1309,24 +1300,26 @@ const CurrentStockPage: React.FC = () => {
                                                     </select>
                                                 </td>
 
-                                                {/* Col 4: Min Stock - Fixed w-20, Gray Background, Center Aligned */}
-                                                <td className="px-2 py-3 text-sm text-center bg-gray-50">
-                                                    <SmartEditableCell
-                                                        value={item.reorder_point || 0}
-                                                        itemId={item.id}
-                                                        field="reorder_point"
-                                                        onSave={handleSmartCellSave}
-                                                        isEditing={editingStockId === item.id}
-                                                        onEditStart={() => setEditingStockId(item.id)}
-                                                        onEditEnd={() => setEditingStockId(null)}
-                                                        min={0}
-                                                        step={1}
-                                                    />
+                                                {/* Col 4: Min Stock - 1% Center Gray */}
+                                                <td className="px-2 py-2 w-[1%] whitespace-nowrap text-sm text-center bg-gray-50">
+                                                    <div className="w-12 mx-auto">
+                                                        <SmartEditableCell
+                                                            value={item.reorder_point || 0}
+                                                            itemId={item.id}
+                                                            field="reorder_point"
+                                                            onSave={handleSmartCellSave}
+                                                            isEditing={editingStockId === item.id}
+                                                            onEditStart={() => setEditingStockId(item.id)}
+                                                            onEditEnd={() => setEditingStockId(null)}
+                                                            min={0}
+                                                            step={1}
+                                                        />
+                                                    </div>
                                                 </td>
 
-                                                {/* Col 5: Status - Fixed w-36, Reduced Badge Font */}
-                                                <td className="px-4 py-3 text-sm">
-                                                    <div className="inline-flex">
+                                                {/* Col 5: Status - 1% Center */}
+                                                <td className="px-2 py-2 w-[1%] whitespace-nowrap text-sm text-center">
+                                                    <div className="flex justify-center">
                                                         {(() => {
                                                             const status = item.status || 'In Stock';
                                                             const colors = {
@@ -1335,7 +1328,7 @@ const CurrentStockPage: React.FC = () => {
                                                                 'Out of Stock': 'bg-red-100 text-red-800',
                                                             };
                                                             return (
-                                                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${colors[status as keyof typeof colors] || 'bg-gray-100 text-gray-800'}`}>
+                                                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium whitespace-nowrap ${colors[status as keyof typeof colors] || 'bg-gray-100 text-gray-800'}`}>
                                                                     {status}
                                                                 </span>
                                                             );
@@ -1343,38 +1336,40 @@ const CurrentStockPage: React.FC = () => {
                                                     </div>
                                                 </td>
 
-                                                {/* Col 6: Opening (Old Stock) - Fixed w-20, Gray Background */}
-                                                <td className="px-2 py-3 text-sm text-right bg-gray-50">
-                                                    <SmartEditableCell
-                                                        value={item.old_stock || 0}
-                                                        itemId={item.id}
-                                                        field="old_stock"
-                                                        onSave={handleSmartCellSave}
-                                                        isEditing={editingStockId === item.id}
-                                                        onEditStart={() => setEditingStockId(item.id)}
-                                                        onEditEnd={() => setEditingStockId(null)}
-                                                        min={0}
-                                                        step={1}
-                                                    />
+                                                {/* Col 6: Opening - 1% Right Gray */}
+                                                <td className="px-2 py-2 w-[1%] whitespace-nowrap text-sm text-right bg-gray-50">
+                                                    <div className="w-12 ml-auto">
+                                                        <SmartEditableCell
+                                                            value={item.old_stock || 0}
+                                                            itemId={item.id}
+                                                            field="old_stock"
+                                                            onSave={handleSmartCellSave}
+                                                            isEditing={editingStockId === item.id}
+                                                            onEditStart={() => setEditingStockId(item.id)}
+                                                            onEditEnd={() => setEditingStockId(null)}
+                                                            min={0}
+                                                            step={1}
+                                                        />
+                                                    </div>
                                                 </td>
 
-                                                {/* Col 7: Purchased (In) - Fixed w-20, Green Up Arrow */}
-                                                <td className="px-2 py-3 text-sm text-right">
-                                                    <span className="text-green-700 font-medium">
+                                                {/* Col 7: In - 1% Right */}
+                                                <td className="px-2 py-2 w-[1%] whitespace-nowrap text-sm text-right">
+                                                    <span className="text-green-700 font-medium text-[11px]">
                                                         {Math.round(item.total_in)} ↑
                                                     </span>
                                                 </td>
 
-                                                {/* Col 8: Sold (Out) - Fixed w-20, Amber/Orange Down Arrow */}
-                                                <td className="px-2 py-3 text-sm text-right">
-                                                    <span className="text-amber-700 font-semibold">
+                                                {/* Col 8: Out - 1% Right */}
+                                                <td className="px-2 py-2 w-[1%] whitespace-nowrap text-sm text-right">
+                                                    <span className="text-amber-700 font-semibold text-[11px]">
                                                         {Math.round(item.total_out)} ↓
                                                     </span>
                                                 </td>
 
-                                                {/* Col 9: Stock On Hand (Result) - Fixed w-24, Extra Large Bold, INTEGER ONLY, Red if Negative */}
-                                                <td className="px-2 py-3 text-right">
-                                                    <span className={`text-xl font-black ${Math.round((item.current_stock || 0) + (item.old_stock || 0)) < 0
+                                                {/* Col 9: On Hand - 1% Right - Result */}
+                                                <td className="px-2 py-2 w-[1%] whitespace-nowrap text-right">
+                                                    <span className={`text-lg font-black tabular-nums ${Math.round((item.current_stock || 0) + (item.old_stock || 0)) < 0
                                                         ? 'text-red-600'
                                                         : 'text-gray-900'
                                                         }`}>
@@ -1382,50 +1377,24 @@ const CurrentStockPage: React.FC = () => {
                                                     </span>
                                                 </td>
 
-                                                {/* Col 10: Total Value - Two-line display with vendor rate */}
-                                                <td className="px-2 py-3 text-sm text-right">
-                                                    <div className="flex flex-col">
-                                                        <span className="text-sm text-gray-700">
+                                                {/* Col 10: Value - Fixed Width Increased (w-28) */}
+                                                <td className="px-2 py-2 w-28 whitespace-nowrap text-sm text-right">
+                                                    <div className="flex flex-col items-end">
+                                                        <span className="text-[11px] text-gray-700 font-medium tabular-nums">
                                                             ₹{item.total_value.toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
                                                         </span>
                                                         {item.latest_vendor_rate && Math.round((item.current_stock || 0) + (item.old_stock || 0)) > 0 ? (
-                                                            <span className="text-xs text-gray-400 block">
-                                                                (@ ₹{item.latest_vendor_rate.toLocaleString('en-IN')} / unit)
+                                                            <span className="text-[10px] text-gray-400 block tabular-nums">
+                                                                (@ ₹{Math.round(item.latest_vendor_rate).toLocaleString('en-IN')})
                                                             </span>
                                                         ) : null}
                                                     </div>
                                                 </td>
 
-                                                {/* Col 11: Add to PO - Show for items that should be reordered */}
-                                                <td className="px-2 py-2 text-sm text-center">
-                                                    {(Math.round((item.current_stock || 0) + (item.old_stock || 0)) <= (item.reorder_point || 0)) ? (
-                                                        <button
-                                                            onClick={() => handleAddToDraftPO(item)}
-                                                            disabled={addingToPO.has(item.part_number)}
-                                                            className="inline-flex items-center gap-1 px-2 py-1 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium rounded transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
-                                                            title="Add to Draft Purchase Order"
-                                                        >
-                                                            {addingToPO.has(item.part_number) ? (
-                                                                <>
-                                                                    <RefreshCw size={12} className="animate-spin" />
-                                                                    <span>Adding...</span>
-                                                                </>
-                                                            ) : (
-                                                                <>
-                                                                    <Plus size={12} />
-                                                                    <span>Add</span>
-                                                                </>
-                                                            )}
-                                                        </button>
-                                                    ) : (
-                                                        <span className="text-gray-400 text-xs">-</span>
-                                                    )}
-                                                </td>
-
-                                                {/* Col 12: History - Larger, more visible */}
-                                                <td className="px-2 py-2 text-sm text-center">
+                                                {/* Col 12: History - 1% Center */}
+                                                <td className="px-2 py-1 w-[1%] whitespace-nowrap text-sm text-center">
                                                     <button
-                                                        className="text-blue-600 hover:text-blue-800 hover:underline text-sm font-medium"
+                                                        className="text-blue-600 hover:text-blue-800 hover:underline text-[10px] font-bold uppercase"
                                                         onClick={() => {
                                                             setSelectedPartHistory({
                                                                 partNumber: item.part_number,
@@ -1439,14 +1408,14 @@ const CurrentStockPage: React.FC = () => {
                                                     </button>
                                                 </td>
 
-                                                {/* Col 13: Delete Stock Item - Show for ALL rows */}
-                                                <td className="px-2 py-2 text-sm text-center">
+                                                {/* Col 13: Delete - 1% Center */}
+                                                <td className="px-2 py-1 w-[1%] whitespace-nowrap text-sm text-center">
                                                     <button
                                                         onClick={() => handleDeleteStock(item)}
                                                         className="text-red-600 hover:text-red-800 disabled:opacity-50"
                                                         title="Delete this stock item"
                                                     >
-                                                        <Trash2 size={16} />
+                                                        <Trash2 size={14} />
                                                     </button>
                                                 </td>
                                             </tr>

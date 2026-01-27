@@ -145,55 +145,6 @@ async def get_stock_levels(
         
         logger.info(f"Retrieved {len(items)} stock levels for {username}")
         
-        # Merge with uploaded mapping sheet data
-        mapping_sheets_response = db.client.table("vendor_mapping_sheets")\
-            .select("part_number, customer_item, old_stock, reorder_point, uploaded_at")\
-            .eq("username", username)\
-            .eq("status", "completed")\
-            .execute()
-        
-        # Create mapping dict
-        mapping_data_dict = {}
-        for sheet_row in (mapping_sheets_response.data or []):
-            part = sheet_row.get("part_number")
-            if part:
-                if part not in mapping_data_dict:
-                    mapping_data_dict[part] = {
-                        "customer_items": [],
-                        "old_stock": None,
-                        "uploaded_reorder_point": None,
-                        "uploaded_at": None
-                    }
-                
-                # Collect customer items
-                if sheet_row.get("customer_item"):
-                    for cust_item in sheet_row["customer_item"]:
-                        if cust_item and cust_item not in mapping_data_dict[part]["customer_items"]:
-                            mapping_data_dict[part]["customer_items"].append(cust_item)
-                
-                # Use most recent values
-                if sheet_row.get("old_stock") is not None:
-                    mapping_data_dict[part]["old_stock"] = sheet_row["old_stock"]
-                if sheet_row.get("reorder_point") is not None:
-                    mapping_data_dict[part]["uploaded_reorder_point"] = sheet_row["reorder_point"]
-                if sheet_row.get("uploaded_at"):
-                    mapping_data_dict[part]["uploaded_at"] = sheet_row["uploaded_at"]
-        
-        # Merge mapping data into stock levels
-        for item in items:
-            part_num = item.get("part_number")
-            if part_num in mapping_data_dict:
-                mapping = mapping_data_dict[part_num]
-                
-                item["old_stock"] = mapping["old_stock"]
-                item["customer_items_array"] = mapping["customer_items"]
-                
-                if mapping["uploaded_reorder_point"] is not None:
-                    item["uploaded_reorder_point"] = mapping["uploaded_reorder_point"]
-                
-                item["has_uploaded_data"] = True
-                item["uploaded_at"] = mapping["uploaded_at"]
-        
         return {
             "success": True,
             "items": items,
@@ -538,38 +489,7 @@ async def delete_transaction(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.delete("/mapping/{part_number}")
-async def delete_vendor_mapping(
-    part_number: str,
-    current_user: Dict[str, Any] = Depends(get_current_user)
-):
-    """
-    Delete vendor mapping for a part number.
-    Removes from vendor_mapping_sheets and triggers stock recalculation.
-    """
-    username = current_user.get("username")
-    db = get_database_client()
-    
-    try:
-        # Delete from vendor_mapping_sheets
-        result = db.client.table("vendor_mapping_sheets")\
-            .delete()\
-            .eq("username", username)\
-            .eq("part_number", part_number)\
-            .execute()
-        
-        logger.info(f"Deleted mapping for {part_number} (username: {username}, deleted {len(result.data)} rows)")
-        
-        # Trigger stock recalculation
-        recalculate_stock_for_user(username)
-        
-        return {
-            "success": True,
-            "message": f"Mapping deleted for {part_number}"
-        }
-    except Exception as e:
-        logger.error(f"Error deleting mapping: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @router.delete("/item/{part_number}")
@@ -617,18 +537,7 @@ async def delete_stock_item(
         mapping_deleted = len(mapping_result.data) if mapping_result.data else 0
         logger.info(f"Deleted {mapping_deleted} vendor_mapping_entries for part {part_number}")
         
-        # 4. Also delete from vendor_mapping_sheets if exists
-        sheet_result = db.client.table("vendor_mapping_sheets")\
-            .delete()\
-            .eq("username", username)\
-            .eq("part_number", part_number)\
-            .execute()
-        
-        sheet_deleted = len(sheet_result.data) if sheet_result.data else 0
-        if sheet_deleted > 0:
-            logger.info(f"Deleted {sheet_deleted} vendor_mapping_sheets for part {part_number}")
-        
-        total_deleted = stock_deleted + mapping_deleted + sheet_deleted
+        total_deleted = stock_deleted + mapping_deleted
         
         if total_deleted == 0 and excluded_count == 0:
             raise HTTPException(status_code=404, detail=f"Stock item {part_number} not found")
@@ -707,18 +616,7 @@ async def delete_stock_items_bulk(
                 if mapping_deleted > 0:
                     logger.info(f"Deleted {mapping_deleted} vendor_mapping_entries for part {part_number}")
                 
-                # 4. Delete from vendor_mapping_sheets
-                sheet_result = db.client.table("vendor_mapping_sheets")\
-                    .delete()\
-                    .eq("username", username)\
-                    .eq("part_number", part_number)\
-                    .execute()
-                
-                sheet_deleted = len(sheet_result.data) if sheet_result.data else 0
-                if sheet_deleted > 0:
-                    logger.info(f"Deleted {sheet_deleted} vendor_mapping_sheets for part {part_number}")
-                
-                item_total = stock_deleted + mapping_deleted + sheet_deleted
+                item_total = stock_deleted + mapping_deleted
                 total_deleted += item_total
                 logger.info(f"✅ Deleted stock item {part_number} (excluded {excluded_count}, deleted {item_total} records)")
                 
@@ -814,9 +712,9 @@ def recalculate_stock_for_user(username: str):
     
     logger.info(f"Found {len(sales_data)} sales invoice items")
     
-    # 3. Get inventory mappings (customer item -> vendor item)
+    # 3. Get inventory mappings (customer item, part, vendor desc, priority, reorder)
     mappings = db.client.table("vendor_mapping_entries")\
-        .select("customer_item_name, part_number, vendor_description")\
+        .select("customer_item_name, part_number, vendor_description, priority, reorder_point")\
         .eq("username", username)\
         .eq("status", "Added")\
         .execute()
@@ -824,32 +722,34 @@ def recalculate_stock_for_user(username: str):
     mapping_data = mappings.data or []
     logger.info(f"Found {len(mapping_data)} inventory mappings")
     
-    # 4. GET EXISTING STOCK LEVELS TO PRESERVE MANUAL EDITS
+    # 4. GET EXISTING STOCK LEVELS TO PRESERVE MANUAL EDITS (Old Stock only)
+    # Priority and Reorder are now sourced from vendor_mapping_entries
     existing_stock_levels = db.client.table("stock_levels")\
-        .select("part_number, internal_item_name, reorder_point, old_stock, priority")\
+        .select("part_number, internal_item_name, old_stock")\
         .eq("username", username)\
         .execute()
     
-    # Build lookup dict: (part_number, internal_item_name) -> {reorder_point, old_stock, priority}
-    # NOTE: customer_items is NOT preserved here - it comes from vendor_mapping_entries
+    # Build lookup dict: (part_number, internal_item_name) -> {old_stock}
     existing_values = {}
     for stock in (existing_stock_levels.data or []):
         key = (stock.get("part_number"), stock.get("internal_item_name"))
         existing_values[key] = {
-            "reorder_point": stock.get("reorder_point"),
-            "old_stock": stock.get("old_stock"),
-            "priority": stock.get("priority")
+            "old_stock": stock.get("old_stock")
         }
     
     logger.info(f"Found {len(existing_values)} existing stock levels to preserve")
     
-    # Create mapping lookup (use default reorder point of 3)
-    customer_to_vendor = {}
+    # Create mapping lookup
+    # key: part_number -> {customer_item, priority, reorder_point}
+    mapping_lookup = {}
     for mapping in mapping_data:
-        customer_item = mapping.get("customer_item_name") # Corrected from 'customer_item'
-        vendor_part = mapping.get("part_number") # Corrected from 'vendor_part_number'
-        if customer_item and vendor_part:
-            customer_to_vendor[customer_item] = vendor_part
+        part = mapping.get("part_number")
+        if part:
+            mapping_lookup[part] = {
+                "customer_item_name": mapping.get("customer_item_name"),
+                "priority": mapping.get("priority"),
+                "reorder_point": mapping.get("reorder_point")
+            }
     
     
     # 4. Initialize stock_by_part with MAPPINGS FIRST (map once, use forever)
@@ -1022,9 +922,21 @@ def recalculate_stock_for_user(username: str):
         preserved = existing_values.get(lookup_key, {})
         
         # Use preserved values if they exist, otherwise use defaults
-        reorder_point = preserved.get("reorder_point") if preserved.get("reorder_point") is not None else data["reorder_point"]
-        old_stock = preserved.get("old_stock") if preserved.get("old_stock") is not None else None
-        priority = preserved.get("priority")
+        # CHANGED: Reorder Point and Priority now come from MAPPING TABLE (mapping_lookup)
+        
+        mapping_info = mapping_lookup.get(part, {})
+        
+        # Priority: From mapping > existing preserved (fallback) > None
+        priority = mapping_info.get("priority") 
+        
+        # Reorder Point: From mapping > default
+        # Note: We prioritize the mapping Reorder Point. 
+        reorder_point = mapping_info.get("reorder_point")
+        if reorder_point is None:
+             reorder_point = DEFAULT_REORDER_POINT
+
+        # Old Stock: Still from existing stock_levels (transactional snapshot)
+        old_stock = preserved.get("old_stock")
         
         # customer_items comes ONLY from vendor_mapping_entries (single source of truth)
         # Already populated in data["customer_items"] from Step 1 (initialization with mappings)
@@ -1042,13 +954,13 @@ def recalculate_stock_for_user(username: str):
             "part_number": part,
             "internal_item_name": data["internal_item_name"],
             "vendor_description": data["vendor_description"],
-            "customer_items": customer_items_str,  # PRESERVED from existing or mapping
+            "customer_items": customer_items_str, 
             "current_stock": round(current_stock, 2),
             "total_in": round(data["total_in"], 2),
             "total_out": round(data["total_out"], 2),
-            "reorder_point": reorder_point,  # PRESERVED from existing or default
-            "old_stock": old_stock,  # PRESERVED from existing
-            "priority": priority, # PRESERVED
+            "reorder_point": reorder_point,  
+            "old_stock": old_stock,  
+            "priority": priority,
             "vendor_rate": data.get("vendor_rate"),
             "customer_rate": data.get("customer_rate"),
             "unit_value": unit_value,
@@ -1119,11 +1031,25 @@ async def update_stock_level(
     try:
         update_data = {}
         
+        # 1. Handle fields that now live in vendor_mapping_entries (Priority, Reorder)
+        # We also need to handle customer_items here as before
+        mapping_updates = {}
+        
         if updates.reorder_point is not None:
             if updates.reorder_point < 0:
                 raise HTTPException(status_code=400, detail="Reorder point must be >= 0")
             update_data["reorder_point"] = updates.reorder_point
+            mapping_updates["reorder_point"] = updates.reorder_point
         
+        if updates.priority is not None:
+            update_data["priority"] = updates.priority
+            mapping_updates["priority"] = updates.priority
+            
+        if updates.customer_items is not None:
+            update_data["customer_items"] = updates.customer_items
+            mapping_updates["customer_item_name"] = updates.customer_items
+
+        # Handle fields that stay in stock_levels
         if updates.unit_value is not None:
             if updates.unit_value < 0:
                 raise HTTPException(status_code=400, detail="Unit value must be >= 0")
@@ -1135,11 +1061,8 @@ async def update_stock_level(
                 raise HTTPException(status_code=400, detail="Old stock must be >= 0")
             update_data["old_stock"] = updates.old_stock
         
-        if updates.priority is not None:
-            update_data["priority"] = updates.priority
-        
-        # Handle customer_items update - goes to vendor_mapping_entries, not stock_levels
-        if updates.customer_items is not None:
+        # If we have mapping updates, we need to push them to vendor_mapping_entries
+        if mapping_updates:
             # Get part_number and internal_item_name from stock_levels
             stock_record = db.client.table("stock_levels")\
                 .select("part_number, internal_item_name")\
@@ -1158,34 +1081,37 @@ async def update_stock_level(
                     .eq("part_number", part_number)\
                     .execute()
                 
+                mapping_upsert = {
+                    "updated_at": datetime.now().isoformat(),
+                    **mapping_updates
+                }
+                
                 if existing_mapping.data:
                     # UPDATE existing mapping
                     db.client.table("vendor_mapping_entries")\
-                        .update({
-                            "customer_item_name": updates.customer_items,
-                            "updated_at": datetime.now().isoformat()
-                        })\
-                        .eq("username", username)\
-                        .eq("part_number", part_number)\
+                        .update(mapping_upsert)\
+                        .eq("id", existing_mapping.data[0]["id"])\
                         .execute()
-                    logger.info(f"Updated customer_item mapping for {part_number} → {updates.customer_items}")
+                    logger.info(f"Using Mapping Source: Updated {mapping_updates.keys()} for {part_number}")
                 else:
                     # CREATE new mapping
+                    # We need minimal required fields: username, part_number, vendor_description, status
+                    mapping_upsert.update({
+                        "username": username,
+                        "part_number": part_number,
+                        "vendor_description": internal_item_name,
+                        "status": "Added",
+                        "created_at": datetime.now().isoformat()
+                    })
+                    
+                    # Ensure customer_item_name is set if not in update (default empty string)
+                    if "customer_item_name" not in mapping_upsert:
+                         mapping_upsert["customer_item_name"] = ""
+                         
                     db.client.table("vendor_mapping_entries")\
-                        .insert({
-                            "username": username,
-                            "part_number": part_number,
-                            "vendor_description": internal_item_name,
-                            "customer_item_name": updates.customer_items,
-                            "status": "Added",
-                            "created_at": datetime.now().isoformat(),
-                            "updated_at": datetime.now().isoformat()
-                        })\
+                        .insert(mapping_upsert)\
                         .execute()
-                    logger.info(f"Created customer_item mapping for {part_number} → {updates.customer_items}")
-                
-                # Also update stock_levels.customer_items for immediate display
-                update_data["customer_items"] = updates.customer_items
+                    logger.info(f"Using Mapping Source: Created mapping + {mapping_updates.keys()} for {part_number}")
         
         if not update_data:
             raise HTTPException(status_code=400, detail="No valid fields to update")

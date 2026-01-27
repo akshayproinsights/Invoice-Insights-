@@ -8,6 +8,8 @@ import time
 import logging
 from typing import List, Dict, Any, Optional, Callable
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 from google import genai
 from google.genai import types
@@ -350,6 +352,7 @@ def convert_to_inventory_rows(
             "total_tokens": total_tokens,
             "cost_inr": cost_inr,
             "accuracy_score": item.get("confidence", 0),
+            "row_accuracy": item.get("confidence", 0),
             
             # Bounding boxes
             "part_number_bbox": get_bbox_json(item, "part_number"),
@@ -395,6 +398,179 @@ def save_to_inventory_table(rows: List[Dict[str, Any]], username: str):
         raise
 
 
+def process_single_inventory_item(
+    file_key: str,
+    r2_bucket: str,
+    username: str,
+    force_upload: bool
+) -> Dict[str, Any]:
+    """
+    Process a single inventory item (helper for parallel processing).
+    Returns a result dictionary.
+    """
+    storage = get_storage_client()
+    db = get_database_client()
+    
+    result = {
+        "success": False,
+        "file_key": file_key,
+        "error": None,
+        "duplicate": None
+    }
+    
+    try:
+        # Download image from R2
+        image_bytes = storage.download_file(r2_bucket, file_key)
+        if not image_bytes:
+            raise Exception(f"Failed to download file from R2: {file_key}")
+        
+        # Calculate image hash for duplicate detection
+        img_hash = calculate_image_hash(image_bytes)
+        
+        # Check for duplicates in inventory_items table
+        # If force_upload is True, we skip the check and DELETE existing duplicates
+        if force_upload:
+            logger.info(f"Force upload enabled. Deleting existing items with hash {img_hash} for replacement.")
+            db.client.table("inventory_items")\
+                .delete()\
+                .eq("image_hash", img_hash)\
+                .eq("username", username)\
+                .execute()
+        else:
+            # Normal flow: Check for duplicates and report them
+            duplicate_check = db.client.table("inventory_items")\
+                .select("*")\
+                .eq("image_hash", img_hash)\
+                .eq("username", username)\
+                .limit(1)\
+                .execute()
+            
+            if duplicate_check.data and len(duplicate_check.data) > 0:
+                # Duplicate found!
+                existing_record = duplicate_check.data[0]
+                logger.warning(f"Duplicate detected for {file_key}: image_hash={img_hash}")
+                
+                # Format upload date for message
+                upload_date = existing_record.get("upload_date")
+                if upload_date:
+                    date_msg = f"already uploaded on {upload_date}"
+                else:
+                    date_msg = "already uploaded previously"
+                
+                # Return duplicate info
+                result["duplicate"] = {
+                    "file_key": file_key,
+                    "image_hash": img_hash,
+                    "existing_record": {
+                        "id": existing_record.get("id"),
+                        "invoice_number": existing_record.get("invoice_number"),
+                        "invoice_date": existing_record.get("invoice_date"),
+                        "receipt_link": existing_record.get("receipt_link"),
+                        "upload_date": existing_record.get("upload_date"),
+                        "part_number": existing_record.get("part_number"),
+                        "description": existing_record.get("description")
+                    },
+                    "message": f"This vendor invoice was {date_msg}"
+                }
+                result["success"] = True # handled as success but with duplicate info
+                return result
+        
+        # Generate permanent public URL for receipt link
+        receipt_link = storage.get_public_url(r2_bucket, file_key)
+        if not receipt_link:
+            logger.warning(f"Public URL not configured, falling back to R2 path for {file_key}")
+            receipt_link = f"r2://{r2_bucket}/{file_key}"
+        
+        # Process with Gemini AI using VENDOR prompt
+        invoice_data = process_vendor_invoice(
+            image_bytes=image_bytes,
+            filename=file_key.split('/')[-1],
+            receipt_link=receipt_link,
+            username=username
+        )
+        
+        if not invoice_data:
+            raise Exception("Gemini processing returned no data")
+        
+        # Convert to inventory rows
+        inventory_rows = convert_to_inventory_rows(invoice_data, username, img_hash)
+        
+        if not inventory_rows:
+            raise Exception("No inventory rows generated from extracted data")
+        
+        # Save to inventory_items table
+        save_to_inventory_table(inventory_rows, username)
+        
+        result["success"] = True
+        logger.info(f"✓ Successfully processed inventory item: {file_key}")
+        
+    except Exception as e:
+        error_msg = f"Failed to process {file_key}: {str(e)}"
+        result["error"] = error_msg
+        logger.error(error_msg)
+        
+    return result
+
+
+
+def check_inventory_item_duplicate(
+    file_key: str,
+    r2_bucket: str,
+    username: str
+) -> Optional[Dict[str, Any]]:
+    """
+    Check if an inventory item is a duplicate without processing it.
+    Downloads file, calculates hash, and checks DB.
+    """
+    storage = get_storage_client()
+    db = get_database_client()
+    
+    try:
+        # Download image from R2
+        image_bytes = storage.download_file(r2_bucket, file_key)
+        if not image_bytes:
+            return None
+        
+        # Calculate image hash
+        img_hash = calculate_image_hash(image_bytes)
+        
+        # Check for duplicates
+        duplicate_check = db.client.table("inventory_items")\
+            .select("*")\
+            .eq("image_hash", img_hash)\
+            .eq("username", username)\
+            .limit(1)\
+            .execute()
+        
+        if duplicate_check.data and len(duplicate_check.data) > 0:
+            existing_record = duplicate_check.data[0]
+            logger.warning(f"Duplicate detected for {file_key}: image_hash={img_hash}")
+            
+            # Format upload date
+            upload_date = existing_record.get("upload_date")
+            date_msg = f"already uploaded on {upload_date}" if upload_date else "already uploaded previously"
+            
+            return {
+                "file_key": file_key,
+                "image_hash": img_hash,
+                "existing_record": {
+                    "id": existing_record.get("id"),
+                    "invoice_number": existing_record.get("invoice_number"),
+                    "invoice_date": existing_record.get("invoice_date"),
+                    "receipt_link": existing_record.get("receipt_link"),
+                    "upload_date": existing_record.get("upload_date"),
+                    "part_number": existing_record.get("part_number"),
+                    "description": existing_record.get("description")
+                },
+                "message": f"This vendor invoice was {date_msg}"
+            }
+            
+    except Exception as e:
+        logger.error(f"Error checking duplicate for {file_key}: {e}")
+        
+    return None
+
+
 def process_inventory_batch(
     file_keys: List[str],
     r2_bucket: str,
@@ -403,145 +579,124 @@ def process_inventory_batch(
     force_upload: bool = False
 ) -> Dict[str, Any]:
     """
-    Process a batch of inventory images with Gemini AI.
+    Process a batch of inventory images with Gemini AI using parallel execution.
     
     Args:
         file_keys: List of R2 file keys to process
         r2_bucket: R2 bucket name
         username: Username for config and RLS
         progress_callback: Optional callback for progress updates
+        force_upload: If True, overwrite duplicates
         
     Returns:
         Dictionary with processing results
     """
-    logger.info(f"Starting inventory batch processing: {len(file_keys)} files")
+    logger.info(f"Starting inventory batch processing: {len(file_keys)} files with 25 workers")
     
-    storage = get_storage_client()
-    db = get_database_client()
     processed = 0
     failed = 0
     errors = []
     duplicates = []  # Track duplicates for user decision
     
-    for idx, file_key in enumerate(file_keys):
-        try:
-            # Update progress
-            if progress_callback:
-                progress_callback(idx, len(file_keys), file_key)
-            
-            logger.info(f"Processing inventory file {idx + 1}/{len(file_keys)}: {file_key}")
-            
-            # Download image from R2
-            image_bytes = storage.download_file(r2_bucket, file_key)
-            if not image_bytes:
-                raise Exception(f"Failed to download file from R2: {file_key}")
-            
-            # Calculate image hash for duplicate detection
-            img_hash = calculate_image_hash(image_bytes)
-            logger.info(f"Image hash: {img_hash}")
-            
-            # Check for duplicates in inventory_items table
-            try:
-                # If force_upload is True, we skip the check and DELETE existing duplicates
-                if force_upload:
-                    logger.info(f"Force upload enabled. Deleting existing items with hash {img_hash} for replacement.")
-                    db.client.table("inventory_items")\
-                        .delete()\
-                        .eq("image_hash", img_hash)\
-                        .eq("username", username)\
-                        .execute()
-                else:
-                    # Normal flow: Check for duplicates and report them
-                    duplicate_check = db.client.table("inventory_items")\
-                        .select("*")\
-                        .eq("image_hash", img_hash)\
-                        .eq("username", username)\
-                        .limit(1)\
-                        .execute()
-                    
-                    if duplicate_check.data and len(duplicate_check.data) > 0:
-                        # Duplicate found!
-                        existing_record = duplicate_check.data[0]
-                        logger.warning(f"Duplicate detected for {file_key}: image_hash={img_hash}")
-                        
-                        # Format upload date for message
-                        upload_date = existing_record.get("upload_date")
-                        if upload_date:
-                            date_msg = f"already uploaded on {upload_date}"
-                        else:
-                            date_msg = "already uploaded previously"
-                        
-                        # Add to duplicates list for user decision
-                        duplicates.append({
-                            "file_key": file_key,
-                            "image_hash": img_hash,
-                            "existing_record": {
-                                "id": existing_record.get("id"),
-                                "invoice_number": existing_record.get("invoice_number"),
-                                "invoice_date": existing_record.get("invoice_date"),
-                                "receipt_link": existing_record.get("receipt_link"),
-                                "upload_date": existing_record.get("upload_date"),
-                                "part_number": existing_record.get("part_number"),
-                                "description": existing_record.get("description")
-                            },
-                            "message": f"This vendor invoice was {date_msg}"
-                        })
-                        
-                        # Skip processing this file - let user decide
-                        logger.info(f"Skipping {file_key} - duplicate detected")
-                        continue
-                    
-            except Exception as e:
-                logger.error(f"Error checking/handling duplicates: {e}")
-                # Continue processing even if duplicate check fails (unless it was a critical DB error)
-            
-            # Generate permanent public URL for receipt link
-            receipt_link = storage.get_public_url(r2_bucket, file_key)
-            if not receipt_link:
-                logger.warning(f"Public URL not configured, falling back to R2 path for {file_key}")
-                receipt_link = f"r2://{r2_bucket}/{file_key}"
-            else:
-                logger.info(f"Generated permanent public URL for {file_key}")
-            
-            # Process with Gemini AI using VENDOR prompt
-            invoice_data = process_vendor_invoice(
-                image_bytes=image_bytes,
-                filename=file_key.split('/')[-1],
-                receipt_link=receipt_link,
-                username=username
-            )
-            
-            if not invoice_data:
-                raise Exception("Gemini processing returned no data")
-            
-            # Convert to inventory rows
-            inventory_rows = convert_to_inventory_rows(invoice_data, username, img_hash)
-            
-            if not inventory_rows:
-                raise Exception("No inventory rows generated from extracted data")
-            
-            # Save to inventory_items table
-            save_to_inventory_table(inventory_rows, username)
-            
-            processed += 1
-            logger.info(f"✓ Successfully processed inventory item: {file_key}")
-            
-        except Exception as e:
-            failed += 1
-            error_msg = f"Failed to process {file_key}: {str(e)}"
-            errors.append(error_msg)
-            logger.error(error_msg)
-            continue
+    # Use ThreadPoolExecutor for parallel processing
+    max_workers = 25
     
-    # Final progress update
-    if progress_callback:
-        progress_callback(len(file_keys), len(file_keys), "Complete")
+    # PHASE 1: PRE-SCAN FOR DUPLICATES (If not forcing upload)
+    # This allows us to return early if duplicates are found, improving UX
+    if not force_upload:
+        logger.info("Phase 2a: Pre-scanning for duplicates...")
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_file = {
+                executor.submit(
+                    check_inventory_item_duplicate,
+                    file_key,
+                    r2_bucket,
+                    username
+                ): file_key for file_key in file_keys
+            }
+            
+            scan_count = 0
+            for future in as_completed(future_to_file):
+                scan_count += 1
+                try:
+                    result = future.result()
+                    if result:
+                        duplicates.append(result)
+                except Exception as e:
+                    logger.error(f"Error during duplicate scan: {e}")
+                
+                # We don't update progress callback here strictly, or we could update as "Scanning..."
+                if progress_callback:
+                    # Fake progress for scanning phase (0-10%)
+                    # Or just keep it at 0
+                    pass
+            
+        if duplicates:
+            logger.info(f"Duplicate scan found {len(duplicates)} duplicates. Stopping batch to request user action.")
+            return {
+                "processed": 0,
+                "failed": 0,
+                "errors": [],
+                "duplicates": duplicates
+            }
+        
+        logger.info("No duplicates found in pre-scan. Proceeding to processing.")
+    
+    # PHASE 2: PROCESSING (If no duplicates or forced)
+    logger.info("Phase 2b: AI Processing...")
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all tasks
+        future_to_file = {
+            executor.submit(
+                process_single_inventory_item, 
+                file_key, 
+                r2_bucket, 
+                username, 
+                force_upload
+            ): file_key for file_key in file_keys
+        }
+        
+        completed_count = 0
+        
+        # Process results as they complete
+        for future in as_completed(future_to_file):
+            completed_count += 1
+            file_key = future_to_file[future]
+            
+            try:
+                result = future.result()
+                
+                # Handle duplicated (Shouldn't happen if pre-scan worked, but safe to keep)
+                if result.get("duplicate"):
+                    duplicates.append(result["duplicate"])
+                    logger.info(f"Skipping {file_key} - duplicate detected")
+                
+                # Handle success (processed or duplicate handled)
+                elif result.get("success"):
+                    processed += 1
+                
+                # Handle error
+                else:
+                    failed += 1
+                    if result.get("error"):
+                        errors.append(result["error"])
+                
+                # Update progress
+                if progress_callback:
+                    # We call callback safe from main thread
+                    progress_callback(completed_count, len(file_keys), file_key)
+                    
+            except Exception as exc:
+                logger.error(f"Generated an exception for {file_key}: {exc}")
+                failed += 1
+                errors.append(f"System error processing {file_key}: {str(exc)}")
     
     results = {
         "processed": processed,
         "failed": failed,
         "errors": errors,
-        "duplicates": duplicates  # Include duplicates for frontend handling
+        "duplicates": duplicates
     }
     
     logger.info(f"Inventory batch processing complete: {processed} succeeded, {failed} failed, {len(duplicates)} duplicates")

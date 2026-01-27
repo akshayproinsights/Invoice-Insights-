@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AuthProvider } from './contexts/AuthContext';
+import { GlobalStatusProvider } from './contexts/GlobalStatusContext';
 import ProtectedRoute from './components/ProtectedRoute';
 import Layout from './components/Layout';
 import LoginPage from './pages/LoginPage';
@@ -25,44 +26,46 @@ const queryClient = new QueryClient({
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <AuthProvider>
-        <BrowserRouter>
-          <Routes>
-            <Route path="/login" element={<LoginPage />} />
-            <Route
-              path="/"
-              element={
-                <ProtectedRoute>
-                  <Layout />
-                </ProtectedRoute>
-              }
-            >
-              {/* Dashboard */}
-              <Route index element={<DashboardPage />} />
+      <GlobalStatusProvider>
+        <AuthProvider>
+          <BrowserRouter>
+            <Routes>
+              <Route path="/login" element={<LoginPage />} />
+              <Route
+                path="/"
+                element={
+                  <ProtectedRoute>
+                    <Layout />
+                  </ProtectedRoute>
+                }
+              >
+                {/* Dashboard */}
+                <Route index element={<DashboardPage />} />
 
-              {/* Sales Section */}
-              <Route path="sales/upload" element={<UploadPage />} />
-              <Route path="sales/review" element={<ReviewInvoiceDetailsPage />} />
-              <Route path="sales/verified" element={<VerifiedInvoicesPage />} />
+                {/* Sales Section */}
+                <Route path="sales/upload" element={<UploadPage />} />
+                <Route path="sales/review" element={<ReviewInvoiceDetailsPage />} />
+                <Route path="sales/verified" element={<VerifiedInvoicesPage />} />
 
-              {/* Inventory Section */}
-              <Route path="inventory/stock" element={<CurrentStockPage />} />
-              <Route path="inventory/upload" element={<InventoryUploadPage />} />
-              <Route path="inventory/verify" element={<VerifyPartsPage />} />
-              <Route path="inventory/mapped" element={<InventoryMappedPage />} />
+                {/* Inventory Section */}
+                <Route path="inventory/stock" element={<CurrentStockPage />} />
+                <Route path="inventory/upload" element={<InventoryUploadPage />} />
+                <Route path="inventory/verify" element={<VerifyPartsPage />} />
+                <Route path="inventory/mapped" element={<InventoryMappedPage />} />
 
-              {/* Legacy routes - redirect to new paths */}
-              <Route path="upload" element={<Navigate to="/sales/upload" replace />} />
-              <Route path="review/dates" element={<Navigate to="/sales/review" replace />} />
-              <Route path="review/amounts" element={<Navigate to="/sales/review" replace />} />
-              <Route path="sales/review/dates" element={<Navigate to="/sales/review" replace />} />
-              <Route path="sales/review/amounts" element={<Navigate to="/sales/review" replace />} />
-              <Route path="verified" element={<Navigate to="/sales/verified" replace />} />
-            </Route>
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-        </BrowserRouter>
-      </AuthProvider>
+                {/* Legacy routes - redirect to new paths */}
+                <Route path="upload" element={<Navigate to="/sales/upload" replace />} />
+                <Route path="review/dates" element={<Navigate to="/sales/review" replace />} />
+                <Route path="review/amounts" element={<Navigate to="/sales/review" replace />} />
+                <Route path="sales/review/dates" element={<Navigate to="/sales/review" replace />} />
+                <Route path="sales/review/amounts" element={<Navigate to="/sales/review" replace />} />
+                <Route path="verified" element={<Navigate to="/sales/verified" replace />} />
+              </Route>
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+          </BrowserRouter>
+        </AuthProvider>
+      </GlobalStatusProvider>
     </QueryClientProvider>
   );
 }

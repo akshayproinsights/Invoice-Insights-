@@ -23,21 +23,7 @@ class MappingSheetExtractedData(BaseModel):
     rows: List[MappingSheetExtractedRow]
 
 
-class VendorMappingSheet(BaseModel):
-    """Database model for vendor_mapping_sheets table"""
-    id: str
-    username: str
-    image_url: str
-    image_hash: str
-    part_number: Optional[str] = None
-    vendor_description: Optional[str] = None
-    customer_item: Optional[List[str]] = None  # Array for multi-select
-    old_stock: Optional[float] = None
-    reorder_point: Optional[int] = None
-    uploaded_at: datetime
-    processed_at: Optional[datetime] = None
-    status: str = "pending"
-    gemini_raw_response: Optional[dict] = None
+
 
 
 class MappingSheetUploadResponse(BaseModel):

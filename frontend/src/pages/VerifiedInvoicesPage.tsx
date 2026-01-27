@@ -77,7 +77,13 @@ const VerifiedInvoicesPage: React.FC = () => {
                 customer_name: customerName || undefined,
                 description: descriptionFilter || undefined,
             });
-            setRecords(data.records || []);
+            const sortedRecords = (data.records || []).sort((a: VerifiedInvoice, b: VerifiedInvoice) => {
+                const aVal = a['Receipt Number'] || '';
+                const bVal = b['Receipt Number'] || '';
+                // Sort descending
+                return bVal.localeCompare(aVal, undefined, { numeric: true, sensitivity: 'base' });
+            });
+            setRecords(sortedRecords);
             // Clear selections when data changes due to filters
             setSelectedIds(new Set());
             setIsSelectAllChecked(false);

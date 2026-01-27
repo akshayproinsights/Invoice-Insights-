@@ -145,13 +145,13 @@ export const purchaseOrderAPI = {
         const response = await apiClient.post('/api/purchase-orders/draft/proceed', request, {
             responseType: 'blob' // Get PDF as blob directly
         });
-        
+
         // Extract metadata from response headers
         const poNumber = response.headers['x-po-number'] || 'Unknown';
         const poId = response.headers['x-po-id'] || 'Unknown';
         const totalItems = parseInt(response.headers['x-total-items'] || '0');
         const totalCost = parseFloat(response.headers['x-total-cost'] || '0');
-        
+
         return {
             success: true,
             po_number: poNumber,
@@ -199,17 +199,17 @@ export const purchaseOrderAPI = {
     downloadAndSavePDF: async (poId: string, filename?: string): Promise<void> => {
         try {
             const pdfBlob = await purchaseOrderAPI.downloadPOPDF(poId);
-            
+
             // Create download link
             const url = window.URL.createObjectURL(pdfBlob);
             const link = document.createElement('a');
             link.href = url;
             link.download = filename || `PurchaseOrder_${poId}.pdf`;
-            
+
             // Trigger download
             document.body.appendChild(link);
             link.click();
-            
+
             // Cleanup
             document.body.removeChild(link);
             window.URL.revokeObjectURL(url);
@@ -219,5 +219,16 @@ export const purchaseOrderAPI = {
         }
     },
 
-
+    /**
+     * Get unique supplier names
+     */
+    getSuppliers: async (): Promise<{
+        success: boolean;
+        suppliers: string[];
+    }> => {
+        const response = await apiClient.get('/api/purchase-orders/suppliers');
+        return response.data;
+    },
 };
+
+

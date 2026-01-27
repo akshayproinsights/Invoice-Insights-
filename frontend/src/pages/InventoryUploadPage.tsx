@@ -5,6 +5,7 @@ import { inventoryAPI } from '../services/inventoryApi';
 import { useQueryClient } from '@tanstack/react-query';
 import DuplicateWarningModal from '../components/DuplicateWarningModal';
 import ImagePreviewModal from '../components/ImagePreviewModal';
+import { useGlobalStatus } from '../contexts/GlobalStatusContext';
 
 const InventoryUploadPage: React.FC = () => {
     const navigate = useNavigate();
@@ -32,6 +33,7 @@ const InventoryUploadPage: React.FC = () => {
     const [duplicateStats, setDuplicateStats] = useState<{ totalUploaded: number; replaced: number; skipped: number }>({ totalUploaded: 0, replaced: 0, skipped: 0 });
     const [uploadedFiles, setUploadedFiles] = useState<string[]>([]);
     const queryClient = useQueryClient();
+    const { setInventoryStatus } = useGlobalStatus(); // NEW: Global Context
 
     // Image preview modal state
     const [previewModalOpen, setPreviewModalOpen] = useState(false);
@@ -39,6 +41,9 @@ const InventoryUploadPage: React.FC = () => {
 
     // Resume monitoring on page load if there's an active task
     useEffect(() => {
+        // Clear completion badge if visiting this page
+        setInventoryStatus({ isComplete: false });
+
         // First check if there's a saved completion status
         const savedCompletion = localStorage.getItem('inventoryCompletionStatus');
         if (savedCompletion) {
@@ -48,7 +53,19 @@ const InventoryUploadPage: React.FC = () => {
                 setIsProcessing(false); // ✓ Not processing anymore - completed
                 setIsUploading(false);
                 setFiles([]); // ✓ Clear files since we're done
-                console.log('📦 Restored inventory completion status');
+
+                // RESTORE GLOBAL STATUS ON LOAD
+                const processed = completionData.progress?.processed || 0;
+                // Assuming completed means ready for sync/verify
+                setInventoryStatus({
+                    isUploading: false,
+                    processingCount: 0,
+                    reviewCount: 0,
+                    syncCount: processed,
+                    isComplete: false // Clear tick
+                });
+
+
                 return; // Don't poll if already completed
             } catch (e) {
                 console.error('Error parsing inventory completion:', e);
@@ -58,17 +75,31 @@ const InventoryUploadPage: React.FC = () => {
 
         const activeTaskId = localStorage.getItem('activeInventoryTaskId');
         if (activeTaskId) {
-            console.log('📦 Resuming inventory session for task:', activeTaskId);
-
             // CRITICAL: Set processing state IMMEDIATELY
+
             setIsProcessing(true);
             setIsUploading(false);
+
+            // Set initial global state assuming processing is active
+            setInventoryStatus({ isUploading: false, processingCount: 1, totalProcessing: 1 }); // Approx
 
             // Start continuous polling
             const interval = setInterval(async () => {
                 try {
                     const statusData = await inventoryAPI.getProcessStatus(activeTaskId);
-                    console.log('📊 Polled inventory status:', statusData.status, `${statusData.progress?.processed}/${statusData.progress?.total}`);
+
+                    // UPDATE GLOBAL STATUS
+                    const total = statusData.progress?.total || 0;
+                    const processed = statusData.progress?.processed || 0;
+                    const remaining = Math.max(0, total - processed);
+
+                    setInventoryStatus({
+                        isUploading: false,
+                        processingCount: remaining,
+                        totalProcessing: total,
+                        reviewCount: 0, // In processing phase
+                        syncCount: 0
+                    });
 
                     // Preserve duplicateStats across updates
                     setProcessingStatus((prev: any) => ({
@@ -90,8 +121,19 @@ const InventoryUploadPage: React.FC = () => {
                         setFilesToSkip([]);
                         setFilesToForceUpload([]);
 
-                        const allFileKeys = duplicates.map((dup: any) => dup.file_key);
+                        // UPDATE GLOBAL STATUS: Need Review
+                        setInventoryStatus({
+                            isUploading: false,
+                            processingCount: 0,
+                            reviewCount: duplicates.length, // Pending duplicates to review
+                            syncCount: processed
+                        });
+
+                        // CRITICAL: Use the full list of R2 keys from the backend response
+                        // This ensures we know about ALL files (new + duplicates) for correct processing later
+                        const allFileKeys = (statusData as any).uploaded_r2_keys || duplicates.map((dup: any) => dup.file_key);
                         setUploadedFiles(allFileKeys);
+                        (window as any).__temp_r2_keys = allFileKeys;
 
                         localStorage.removeItem('activeInventoryTaskId');
                         return;
@@ -103,17 +145,26 @@ const InventoryUploadPage: React.FC = () => {
                         setPollingInterval(null);
                         localStorage.removeItem('activeInventoryTaskId');
                         localStorage.setItem('inventoryCompletionStatus', JSON.stringify(statusData));
-                        console.log('✅ Inventory processing completed');
+
+                        // UPDATE GLOBAL STATUS: Finished
+                        setInventoryStatus({
+                            isUploading: false,
+                            processingCount: 0,
+                            reviewCount: 0,
+                            syncCount: processed
+                        });
+
+
                     }
                 } catch (error: any) {
                     console.error('Error polling inventory status:', error);
                     if (error?.response?.status === 403 || error?.response?.status === 404) {
-                        console.log('Inventory task no longer exists');
                         clearInterval(interval);
                         setPollingInterval(null);
                         localStorage.removeItem('activeInventoryTaskId');
                         setIsProcessing(false);
                         setProcessingStatus(null);
+                        setInventoryStatus({ processingCount: 0, isUploading: false });
                     }
                 }
             }, 1000);
@@ -124,7 +175,6 @@ const InventoryUploadPage: React.FC = () => {
         // Cleanup on unmount - preserve session
         return () => {
             if (pollingInterval) {
-                console.log('🔄 Page unmounting - stopping polling (session preserved)');
                 clearInterval(pollingInterval);
             }
         };
@@ -210,6 +260,7 @@ const InventoryUploadPage: React.FC = () => {
                 setIsProcessing(false);
                 setProcessingStatus(null);
                 localStorage.removeItem('inventoryCompletionStatus');
+                setInventoryStatus({ syncCount: 0, processingCount: 0 }); // Reset global status
             }
 
             setFiles((prev) => [...prev, ...uniqueFiles]);
@@ -253,6 +304,15 @@ const InventoryUploadPage: React.FC = () => {
 
         try {
             setIsUploading(true);
+            // UPDATE GLOBAL STATUS: Uploading
+            setInventoryStatus({
+                isUploading: true,
+                processingCount: files.length,
+                totalProcessing: files.length,
+                reviewCount: 0,
+                syncCount: 0
+            });
+
             setUploadProgress(0);
 
             // Initialize upload tracking
@@ -305,6 +365,9 @@ const InventoryUploadPage: React.FC = () => {
 
             // Start processing with forceUpload parameter
             setIsProcessing(true);
+            // UPDATE GLOBAL STATUS: Processing
+            setInventoryStatus({ isUploading: false }); // Still processingCount = total
+
             const processResponse = await inventoryAPI.processInventory(fileKeys, forceUpload);
             setProcessingStatus(processResponse);
 
@@ -314,6 +377,12 @@ const InventoryUploadPage: React.FC = () => {
             const pollInterval = setInterval(async () => {
                 const status = await inventoryAPI.getProcessStatus(taskId);
                 setProcessingStatus(status);
+
+                // UPDATE GLOBAL STATUS: Processing Progress
+                const processed = status.progress?.processed || 0;
+                const total = status.progress?.total || 0;
+                const remaining = Math.max(0, total - processed);
+                setInventoryStatus({ processingCount: remaining });
 
                 // Handle duplicate detection - START SEQUENTIAL WORKFLOW
                 if (status.status === 'duplicate_detected' && (status as any).duplicates?.length > 0) {
@@ -325,6 +394,13 @@ const InventoryUploadPage: React.FC = () => {
                     setDuplicateQueue(duplicates);
                     setCurrentDuplicateIndex(0);
 
+                    // UPDATE GLOBAL STATUS: Need Review
+                    setInventoryStatus({
+                        processingCount: 0,
+                        reviewCount: duplicates.length,
+                        syncCount: processed // Successful ones are ready to sync
+                    });
+
                     // Track how many files were successfully processed before duplicates
                     const newFilesProcessed = status.progress?.processed || 0;
                     setDuplicateStats(prev => ({ ...prev, newFiles: newFilesProcessed }));
@@ -335,6 +411,11 @@ const InventoryUploadPage: React.FC = () => {
                     setShowDuplicateModal(true);
                     setFilesToSkip([]);
                     setFilesToForceUpload([]);
+
+                    // CRITICAL FIX: Update uploadedFiles with R2 keys from the processing status
+                    setUploadedFiles((status as any).uploaded_r2_keys || []);
+                    (window as any).__temp_r2_keys = (status as any).uploaded_r2_keys || [];
+
                     return;
                 }
 
@@ -348,6 +429,8 @@ const InventoryUploadPage: React.FC = () => {
                         finishProcessing(duplicateStats);
                     } else {
                         setIsProcessing(false);
+                        // Failed
+                        setInventoryStatus({ processingCount: 0 });
                     }
                 }
             }, 1000);
@@ -355,6 +438,7 @@ const InventoryUploadPage: React.FC = () => {
             console.error('Error:', error);
             setIsUploading(false);
             setIsProcessing(false);
+            setInventoryStatus({ isUploading: false, processingCount: 0 });
         }
     };
 
@@ -366,32 +450,28 @@ const InventoryUploadPage: React.FC = () => {
         const skipList = [...filesToSkip, duplicateInfo.file_key];
         setFilesToSkip(skipList);
 
+        // Decrement global review count
+        setInventoryStatus({ reviewCount: Math.max(0, duplicateQueue.length - (currentDuplicateIndex + 1)) });
+
+
         // Track skipped files
         setDuplicateStats(prev => ({ ...prev, skipped: prev.skipped + 1 }));
 
-        // Move to next duplicate or finish
-        const nextIndex = currentDuplicateIndex + 1;
-        if (nextIndex < duplicateQueue.length) {
-            // Show next duplicate
-            setCurrentDuplicateIndex(nextIndex);
-            setDuplicateInfo(duplicateQueue[nextIndex]);
-        } else {
-            // All duplicates handled - close modal and process remaining files
-            setShowDuplicateModal(false);
-            setDuplicateQueue([]);
-            setDuplicateInfo(null);
-            processRemainingFiles(skipList, filesToForceUpload);
-        }
+        moveToNextDuplicate(skipList, filesToForceUpload, (window as any).__temp_r2_keys || []);
     };
 
     const handleUploadAnyway = () => {
         const currentDup = duplicateQueue[currentDuplicateIndex];
         const updatedForceUpload = [...filesToForceUpload, currentDup.file_key];
         setFilesToForceUpload(updatedForceUpload);
-        moveToNextDuplicate(filesToSkip, updatedForceUpload);
+
+        // Decrement global review count
+        setInventoryStatus({ reviewCount: Math.max(0, duplicateQueue.length - (currentDuplicateIndex + 1)) });
+
+        moveToNextDuplicate(filesToSkip, updatedForceUpload, (window as any).__temp_r2_keys || []);
     };
 
-    const moveToNextDuplicate = (skipList: string[] = filesToSkip, forceUploadList: string[] = filesToForceUpload) => {
+    const moveToNextDuplicate = (skipList: string[] = filesToSkip, forceUploadList: string[] = filesToForceUpload, allR2Keys: string[] = uploadedFiles) => {
         const nextIndex = currentDuplicateIndex + 1;
 
         if (nextIndex < duplicateQueue.length) {
@@ -403,84 +483,118 @@ const InventoryUploadPage: React.FC = () => {
             setShowDuplicateModal(false);
             setDuplicateQueue([]);
             setDuplicateInfo(null);
-            processRemainingFiles(skipList, forceUploadList);
+            processRemainingFiles(skipList, forceUploadList, allR2Keys);
         }
     };
 
-    const processRemainingFiles = async (_skipList: string[] = filesToSkip, forceUploadList: string[] = filesToForceUpload) => {
+    const processRemainingFiles = async (_skipList: string[] = filesToSkip, forceUploadList: string[] = filesToForceUpload, allR2Keys: string[] = uploadedFiles) => {
         try {
             setIsProcessing(true);
 
-            // Batch: Force upload duplicates (user chose to replace)
-            if (forceUploadList.length > 0) {
+            // UPDATE GLOBAL STATUS: Back to Processing
+            // Only forced uploads are processed again? Or skipped just ignored.
+            // Actually, we are starting a NEW process for everything including new + forced.
+            // Logic in processRemainingFiles calculates allFilesToProcess.
+
+            // Filter non-duplicate files from allR2Keys
+            const allDuplicateKeys = [..._skipList, ...forceUploadList];
+            const nonDuplicateFiles = allR2Keys.filter(key => !allDuplicateKeys.includes(key));
+            const allFilesToProcess = [...nonDuplicateFiles, ...forceUploadList];
+
+            setInventoryStatus({
+                isUploading: false,
+                processingCount: allFilesToProcess.length,
+                totalProcessing: allFilesToProcess.length,
+                reviewCount: 0
+            });
+
+
+            if (allFilesToProcess.length > 0) {
+                // Update stats for summary later
                 setProcessingStatus({
                     task_id: '',
                     status: 'processing',
-                    progress: { total: forceUploadList.length, processed: 0, failed: 0 },
-                    message: 'Processing replaced files...'
+                    progress: { total: allFilesToProcess.length, processed: 0, failed: 0 },
+                    message: `Processing ${allFilesToProcess.length} file(s)...`,
+                    duplicateStats: {
+                        skipped: _skipList.length,
+                        replaced: forceUploadList.length,
+                        newFiles: nonDuplicateFiles.length,
+                        totalUploaded: allR2Keys.length
+                    }
                 });
 
-                const forceResponse = await inventoryAPI.processInventory(forceUploadList, true);
-                setProcessingStatus(forceResponse);
+                // Send all files for processing
+                // CRITICAL: Force upload MUST be true because files are already in R2
+                const processResponse = await inventoryAPI.processInventory(allFilesToProcess, true);
+                setProcessingStatus(processResponse);
 
-                // Poll for force upload completion
+                // Poll for completion
                 const pollForce = setInterval(async () => {
-                    const status = await inventoryAPI.getProcessStatus(forceResponse.task_id);
-                    setProcessingStatus(status);
+                    const status = await inventoryAPI.getProcessStatus(processResponse.task_id);
+                    // Preserve duplicateStats across polling updates
+                    setProcessingStatus((prev: any) => ({
+                        ...status,
+                        duplicateStats: prev?.duplicateStats
+                    }));
+
+                    // UPDATE GLOBAL STATUS: Progress
+                    const processed = status.progress?.processed || 0;
+                    const total = status.progress?.total || 0;
+                    const remaining = Math.max(0, total - processed);
+                    setInventoryStatus({ processingCount: remaining });
+
 
                     if (status.status === 'completed' || status.status === 'failed') {
                         clearInterval(pollForce);
-                        // Track replaced files count - update stats and finish
-                        const replacedCount = status.progress?.processed || 0;
-                        setDuplicateStats(prev => {
-                            const updatedStats = { ...prev, replaced: replacedCount };
-                            // Call finishProcessing with the updated stats
-                            finishProcessing(updatedStats);
-                            return updatedStats;
-                        });
+                        finishProcessing(status);
                     }
                 }, 1000);
             } else {
-                // No files to force upload, just finish - use current state
-                finishProcessing(duplicateStats);
+                // No files to process - all were skipped
+                finishProcessing();
             }
         } catch (error) {
             console.error('Error processing remaining files:', error);
             setIsProcessing(false);
+            setInventoryStatus({ processingCount: 0 });
         }
     };
 
-    const finishProcessing = (stats?: { totalUploaded: number; replaced: number; skipped: number }) => {
-        // Generate summary message using passed stats (or fallback to state for edge cases)
-        const { totalUploaded, replaced, skipped } = stats || duplicateStats;
+    const finishProcessing = (latestStatus?: any) => {
+        // Use latest status if provided (which might be the full status object), otherwise fall back to state
+        const statusToUse = (latestStatus && latestStatus.progress) ? latestStatus : processingStatus;
 
-        // Calculate new files correctly: new = total uploaded - replaced - skipped
-        const newFiles = Math.max(0, totalUploaded - replaced - skipped);
-        const totalProcessed = newFiles + replaced;
+        // Extract stats from status, or passed param, or state
+        const stats = (statusToUse as any).duplicateStats || duplicateStats;
+        const { totalUploaded, replaced, skipped } = stats;
 
-        let summaryMessage = '';
+        // Calculate new files: new = total uploaded - replaced - skipped
+        // If we processed everything directly (no duplicates flow), newFiles is simply totalProcessed
+        // We use statusToUse.progress.processed for total successful processed count
+        const totalProcessed = statusToUse?.progress?.processed || 0;
 
-        if (totalProcessed > 0) {
+        let newFiles = 0;
+        if (totalUploaded > 0) {
+            newFiles = Math.max(0, totalUploaded - replaced - skipped);
+        } else {
+            // Fallback if totalUploaded wasn't set correctly (legacy flow)
+            newFiles = Math.max(0, totalProcessed - replaced);
+        }
+
+        let summaryMessage = `Successfully processed ${totalProcessed} vendor invoice${totalProcessed !== 1 ? 's' : ''}`;
+
+        if (replaced > 0 || skipped > 0) {
             const parts: string[] = [];
-
-            // Main processed count
-            parts.push(`Successfully processed ${totalProcessed} vendor invoice${totalProcessed !== 1 ? 's' : ''}`);
-
-            // Breakdown if there were duplicates
-            if (replaced > 0 || skipped > 0) {
-                const breakdown: string[] = [];
-                if (newFiles > 0) breakdown.push(`${newFiles} new`);
-                if (replaced > 0) breakdown.push(`${replaced} replaced`);
-                if (skipped > 0) breakdown.push(`${skipped} skipped`);
-                parts.push(`(${breakdown.join(', ')})`);
-            }
-
-            summaryMessage = parts.join(' ');
+            if (newFiles > 0) parts.push(`${newFiles} new`);
+            if (replaced > 0) parts.push(`${replaced} replaced`);
+            if (skipped > 0) parts.push(`${skipped} skipped`);
+            if (parts.length > 0) summaryMessage += ` (${parts.join(', ')})`;
         } else {
             summaryMessage = 'Processing complete';
         }
 
-        setProcessingStatus({
+        const finalStatus = {
             task_id: '',
             status: 'completed',
             progress: {
@@ -490,8 +604,19 @@ const InventoryUploadPage: React.FC = () => {
             },
             message: summaryMessage,
             duplicateStats: duplicateStats  // Preserve stats for display
-        });
+        };
 
+        setProcessingStatus(finalStatus);
+        localStorage.setItem('inventoryCompletionStatus', JSON.stringify(finalStatus));
+
+        // UPDATE GLOBAL STATUS: Sync Ready
+        setInventoryStatus({
+            isUploading: false,
+            processingCount: 0,
+            reviewCount: 0,
+            syncCount: finalStatus.progress.processed,
+            isComplete: true // Show green tick
+        });
 
         setIsProcessing(false);
         // DON'T clear files or state here - keep them so the success UI displays properly
@@ -527,6 +652,7 @@ const InventoryUploadPage: React.FC = () => {
             )}
 
             {/* Upload Area */}
+            {/* Simulator Removed */}
             <div
                 onDragOver={handleDragOver}
                 onDragLeave={handleDragLeave}
@@ -735,7 +861,7 @@ const InventoryUploadPage: React.FC = () => {
                                 <div className="space-y-2 text-xs">
                                     <div className="flex justify-between">
                                         <span className="text-gray-600">Total Files:</span>
-                                        <span className="font-medium">{processingStatus.progress?.total || 0}</span>
+                                        <span className="font-medium">{(processingStatus as any).duplicateStats?.totalUploaded || processingStatus.progress?.total || 0}</span>
                                     </div>
                                     <div className="flex justify-between">
                                         <span className="text-gray-600">Processed:</span>
